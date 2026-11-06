@@ -1,0 +1,15 @@
+{
+  "profiles": [
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "url": "https://api.deepseek.com/chat/completions",
+      "key": "",
+      "model": "deepseek-chat"
+    }
+  ],
+  "routes": {
+    "main": "deepseek",
+    "sub": "deepseek"
+  }
+}

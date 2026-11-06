@@ -1,0 +1,18 @@
+[指令列表]
+/烂梗 - 随机发送一条烂梗
+/rl - 重新生成上一条回复
+/char set <角色设定> - 设置专属人格
+/char clear - 清除专属人格
+/charfit set <0.0-1.0> - 设置人格拟合度
+/user set <用户人设> - 设置用户信息
+/user clear - 清除用户信息
+/mdchange - 切换回复模式 [仅管理]
+/atswitch - 切换触发方式 [仅管理]
+/cd set <秒数> - 设置自动回复冷却 [仅管理]
+/atcd set <秒数> - 设置被@回复冷却 [仅管理]
+/faver set <QQ号> <数值> - 设置好感度 [仅管理]
+/name set <名字1> <名字2>... - 设置提名列表 [仅管理]
+/infer set <AI/PY> - 设置判回方式：AI/概率 [仅管理]
+/pro set <概率> - 设置掷骰概率 [仅管理]
+/memory reset - 清空聊天记忆 [群聊中仅管理]
+/cmd help - 查看本指令列表

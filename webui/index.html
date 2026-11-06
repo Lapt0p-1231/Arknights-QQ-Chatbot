@@ -1,0 +1,1585 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ARK-BOT // OPERATIONS TERMINAL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0a0a; --bg2:#0d1219; --panel:#10161f; --panel2:#141b26;
+  --line:#26313f; --line2:#35445a;
+  --text:#e8eef5; --dim:#8fa1b3; --faint:#5b6b7d;
+  --accent:#3ec6ff; --accent-dim:rgba(62,198,255,.14);
+  --red:#ff3b30; --cyan:#3ddcbe; --green:#9ae6b4;
+  --mono:'JetBrains Mono','Noto Sans SC',monospace;
+  --en:'Rajdhani','Noto Sans SC',sans-serif;
+  --cn:'Noto Sans SC',sans-serif;
+  --cut:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px));
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--text); font-family:var(--cn);
+  background-image:
+    linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px);
+  background-size:28px 28px;
+}
+body::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:60;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);
+  opacity:.35;
+}
+::selection{background:var(--accent);color:#000}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:#080c12}
+::-webkit-scrollbar-thumb{background:#2c3a4c;border:1px solid #080c12}
+::-webkit-scrollbar-thumb:hover{background:var(--accent)}
+
+.shell{display:flex;min-height:100vh;position:relative;z-index:1}
+.rail{
+  width:236px;flex-shrink:0;border-right:1px solid var(--line);
+  background:linear-gradient(180deg,#0c1119,#080c12);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
+}
+.brand{padding:22px 20px 18px;border-bottom:1px solid var(--line);position:relative;overflow:hidden}
+.brand::before{
+  content:"";position:absolute;right:-30px;top:-30px;width:120px;height:120px;
+  border:1px solid rgba(62,198,255,.18);transform:rotate(45deg);
+}
+.brand h1{font-family:var(--en);font-size:30px;letter-spacing:2px;font-weight:700;line-height:1}
+.brand h1 span{color:var(--accent)}
+.brand .sub{font-family:var(--mono);font-size:9px;letter-spacing:3px;color:var(--dim);margin-top:6px;text-transform:uppercase}
+.brand .tag{margin-top:12px;display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:1px;color:#000;background:var(--accent);padding:2px 8px;clip-path:polygon(0 0,100% 0,calc(100% - 6px) 100%,0 100%)}
+.nav{padding:14px 0;flex:1;overflow:auto}
+.nav-item{
+  display:flex;align-items:center;gap:12px;padding:14px 20px;cursor:pointer;
+  border-left:2px solid transparent;transition:.18s;position:relative;user-select:none;
+}
+.nav-item:hover{background:#131a24}
+.nav-item:hover .idx{color:var(--accent)}
+.nav-item.active{background:linear-gradient(90deg,var(--accent-dim),transparent);border-left-color:var(--accent)}
+.nav-item .idx{font-family:var(--en);font-size:22px;font-weight:700;color:#33404f;line-height:1;width:34px;transition:.18s}
+.nav-item.active .idx{color:var(--accent)}
+.nav-item .lbl .en{font-family:var(--en);font-size:14px;letter-spacing:1.5px;font-weight:600;text-transform:uppercase}
+.nav-item .lbl .cn{font-size:11px;color:var(--dim);margin-top:1px}
+.rail-foot{padding:16px 20px;border-top:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--faint);line-height:1.9}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--red);margin-right:6px;vertical-align:1px}
+.dot.on{background:var(--green);box-shadow:0 0 8px rgba(154,230,180,.7)}
+.dot.warn{background:var(--accent);box-shadow:0 0 8px rgba(62,198,255,.6)}
+
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{
+  display:flex;align-items:center;gap:18px;padding:16px 28px;border-bottom:1px solid var(--line);
+  background:rgba(10,10,10,.85);backdrop-filter:blur(6px);position:sticky;top:0;z-index:20;
+}
+.topbar .crumb{font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--faint)}
+.topbar .crumb b{color:var(--dim);font-weight:500}
+.topbar .grow{flex:1}
+.chip{
+  font-family:var(--mono);font-size:10px;letter-spacing:.5px;color:var(--dim);
+  border:1px solid var(--line);padding:5px 10px;display:inline-flex;align-items:center;gap:6px;
+}
+.chip b{color:var(--text);font-weight:500}
+.chip.yellow{border-color:rgba(62,198,255,.4);color:var(--accent)}
+.clock{font-family:var(--en);font-size:15px;letter-spacing:2px;color:var(--dim)}
+
+.content{padding:26px 28px 60px;max-width:1360px;width:100%;margin:0 auto}
+.view{animation:in .28s ease-out}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.page-head{display:flex;align-items:flex-end;gap:16px;margin-bottom:22px;position:relative}
+.page-head .ghost{font-family:var(--en);font-size:64px;font-weight:700;color:#1a2330;line-height:.8;user-select:none}
+.page-head .t .en{font-family:var(--en);font-size:26px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+.page-head .t .cn{font-size:12px;color:var(--dim);letter-spacing:2px;margin-top:2px}
+.page-head .bar{flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent);margin-bottom:8px}
+.page-head .meta{font-family:var(--mono);font-size:10px;color:var(--faint);letter-spacing:1px;margin-bottom:8px}
+
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:1100px){.g3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:820px){.g2,.g3{grid-template-columns:1fr}}
+
+.panel{
+  background:linear-gradient(180deg,var(--panel),#0d1420);
+  border:1px solid var(--line);clip-path:var(--cut);position:relative;
+}
+.panel::before{
+  content:"";position:absolute;left:0;top:0;width:34px;height:2px;background:var(--accent);
+}
+.panel-h{
+  display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line);
+  background:
+    repeating-linear-gradient(45deg,rgba(62,198,255,.05) 0 5px,transparent 5px 12px);
+}
+.panel-h .n{font-family:var(--en);font-size:18px;font-weight:700;color:var(--accent);line-height:1}
+.panel-h .tt{font-family:var(--en);font-size:13px;letter-spacing:2px;text-transform:uppercase}
+.panel-h .desc{font-size:10px;color:var(--faint);margin-left:auto;letter-spacing:1px}
+.panel-b{padding:16px}
+.panel-b.tight{padding:0}
+
+.row{display:flex;align-items:center;gap:10px}
+.row+.row{margin-top:12px}
+.between{justify-content:space-between}
+.wrap{flex-wrap:wrap}
+.grow{flex:1}
+.label{font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--dim);text-transform:uppercase}
+.hint{font-size:10px;color:var(--faint);line-height:1.6}
+
+.btn{
+  font-family:var(--mono);font-size:11px;letter-spacing:1px;padding:8px 14px;cursor:pointer;
+  background:transparent;border:1px solid var(--line2);color:var(--text);transition:.15s;
+  clip-path:polygon(0 0,calc(100% - 7px) 0,100% 7px,100% 100%,7px 100%,0 calc(100% - 7px));
+  white-space:nowrap;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#000;font-weight:700}
+.btn.primary:hover{background:#7edaff;color:#000}
+.btn.danger{border-color:rgba(255,59,48,.5);color:#ff8a80}
+.btn.danger:hover{background:rgba(255,59,48,.12);border-color:var(--red);color:#ff6b60}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.sm{padding:5px 9px;font-size:10px}
+.btn.icon{padding:5px 8px;min-width:28px}
+
+input[type=text],input[type=number],textarea,select{
+  background:#0a0e14;border:1px solid var(--line);color:var(--text);
+  padding:8px 10px;font-family:var(--mono);font-size:12px;outline:none;width:100%;
+  transition:.15s;
+}
+input:focus,textarea:focus,select:focus{border-color:var(--accent);box-shadow:inset 0 -1px 0 var(--accent)}
+textarea{resize:vertical;line-height:1.7}
+input[type=number]{width:110px}
+input[type=range]{accent-color:var(--accent);width:100%}
+
+.switch{
+  width:42px;height:20px;background:#1a2330;border:1px solid var(--line2);cursor:pointer;
+  position:relative;transition:.18s;flex-shrink:0;
+}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;background:#5b6b7d;transition:.18s}
+.switch.on{background:var(--accent-dim);border-color:var(--accent)}
+.switch.on::after{left:24px;background:var(--accent)}
+
+.seg{display:inline-flex;border:1px solid var(--line2)}
+.seg button{
+  font-family:var(--mono);font-size:11px;padding:7px 16px;background:transparent;border:0;
+  color:var(--dim);cursor:pointer;letter-spacing:1px;
+}
+.seg button.on{background:var(--accent);color:#000;font-weight:700}
+
+.tag{
+  display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);
+  padding:3px 8px;font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.5px;
+}
+.tag b{color:var(--text);font-weight:500}
+.tag.y{color:var(--accent);border-color:rgba(62,198,255,.45)}
+.tag.r{color:#ff8a80;border-color:rgba(255,59,48,.45)}
+.tag.c{color:var(--cyan);border-color:rgba(61,220,190,.4)}
+.tag.ghost{color:var(--faint)}
+.x{cursor:pointer;color:var(--faint);margin-left:2px}
+.x:hover{color:var(--red)}
+
+.kv{display:grid;grid-template-columns:88px 1fr;gap:6px 12px;font-size:12px}
+.kv .k{font-family:var(--mono);font-size:10px;color:var(--faint);letter-spacing:1px;padding-top:2px}
+.kv .v{color:var(--text);word-break:break-all}
+
+.divider{height:1px;background:var(--line);margin:14px 0}
+.muted{color:var(--dim)}
+.faint{color:var(--faint)}
+.mono{font-family:var(--mono)}
+.small{font-size:11px}
+.empty{padding:26px;text-align:center;color:var(--faint);font-family:var(--mono);font-size:11px;letter-spacing:1px}
+
+/* ---- logs ---- */
+.log-tools{display:flex;flex-wrap:wrap;gap:6px;padding:12px 16px;border-bottom:1px solid var(--line);align-items:center}
+.log-tools .grow{flex:1}
+.logbox{
+  height:calc(100vh - 330px);min-height:360px;overflow:auto;background:#060a10;
+  font-family:var(--mono);font-size:11.5px;line-height:1.75;padding:12px 16px;
+}
+.logline{white-space:pre-wrap;word-break:break-all;border-left:2px solid transparent;padding-left:10px;color:#c9d4e0}
+.logline:hover{background:#10161f}
+.logline .ts{color:#4a5a6c;margin-right:8px}
+.logline.judge{border-left-color:#3d6f78;color:#c3cedb}
+.logline.rag{border-left-color:#4a5f8f;color:#aabce6}
+.logline.freq{border-left-color:#7a6a2a;color:#d8c47a}
+.logline.vector{border-left-color:#5c4a72;color:#c7b3dd}
+.logline.memory{border-left-color:#4f6b4f;color:#b7d3b7}
+.logline.reply{border-left-color:#6b6b6b;color:#dbe4ee}
+.logline.error{border-left-color:var(--red);color:#ff8a80;background:rgba(255,59,48,.04)}
+.logline.musing{border-left-color:#8f6b3a;color:#e0c194}
+.logline.do{border-left-color:var(--accent);color:#b3e4ff}
+
+/* ---- memory ---- */
+.hot-list{max-height:420px;overflow:auto}
+.hot-item{display:flex;gap:10px;padding:9px 14px;border-bottom:1px solid #1c2634;font-size:12px;line-height:1.6}
+.hot-item .r{font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--faint);width:56px;flex-shrink:0;padding-top:2px}
+.hot-item.user .r{color:var(--cyan)}
+.hot-item.assistant .r{color:var(--accent)}
+.hot-item .c{white-space:pre-wrap;word-break:break-word;color:#d0dae6;flex:1}
+.hot-item .ops{display:flex;gap:5px;flex-shrink:0;align-self:flex-start}
+.vec-table .ops{display:flex;gap:5px}
+.vec-table{width:100%;border-collapse:collapse;font-size:12px}
+.vec-table th{
+  font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--faint);
+  text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);font-weight:400;text-transform:uppercase;
+}
+.vec-table td{padding:9px 10px;border-bottom:1px solid #1a2330;vertical-align:top}
+.vec-table tr:hover td{background:#131a24}
+.vec-table .content{max-width:560px;white-space:pre-wrap;word-break:break-word;line-height:1.55}
+.score{display:flex;align-items:center;gap:8px}
+.score .bar{height:3px;background:#223040;width:90px;position:relative}
+.score .bar i{position:absolute;left:0;top:0;height:100%;background:var(--accent)}
+.score .n{font-family:var(--mono);font-size:10px;color:var(--accent);width:42px}
+.bars{display:flex;align-items:flex-end;gap:2px;height:54px;margin-top:10px}
+.bars i{flex:1;background:linear-gradient(180deg,var(--accent),#0b5c80);min-height:1px;opacity:.75}
+
+/* ---- prompts ---- */
+.plist{width:100%;border-collapse:collapse;font-size:12px}
+.plist th{font-family:var(--mono);font-size:9px;letter-spacing:1px;color:var(--faint);text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);font-weight:400;text-transform:uppercase}
+.plist td{padding:9px 10px;border-bottom:1px solid #1a2330;vertical-align:middle}
+.plist tr:hover td{background:#131a24}
+.plist .fname{font-family:var(--mono);font-size:11.5px;color:#dbe4ee}
+.plist .fmeta{font-family:var(--mono);font-size:9px;color:var(--faint);margin-top:2px}
+.plist .ops{display:flex;gap:5px;justify-content:flex-end}
+
+/* ---- modal ---- */
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:80;display:flex;align-items:center;justify-content:center;padding:24px}
+.modal{width:min(860px,94vw);max-height:88vh;display:flex;flex-direction:column;background:#0d1219;border:1px solid var(--line2);clip-path:var(--cut);box-shadow:0 30px 80px rgba(0,0,0,.7)}
+.modal-h{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+.modal-h .tt{font-family:var(--en);font-size:15px;letter-spacing:2px;text-transform:uppercase}
+.modal-b{padding:16px 18px;overflow:auto}
+.modal-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+.modal textarea{min-height:340px;font-size:12px}
+
+.toasts{position:fixed;right:20px;bottom:20px;z-index:100;display:flex;flex-direction:column;gap:8px}
+.toast{
+  background:#0f1620;border:1px solid var(--line2);border-left:3px solid var(--accent);
+  padding:10px 14px;font-family:var(--mono);font-size:11px;min-width:220px;max-width:420px;
+  animation:in .2s ease-out;box-shadow:0 10px 30px rgba(0,0,0,.5);
+}
+.toast.err{border-left-color:var(--red);color:#ff9a90}
+.toast b{color:var(--accent);font-weight:500;display:block;margin-bottom:2px;letter-spacing:1px}
+
+@media(max-width:900px){
+  .shell{flex-direction:column}
+  .rail{width:100%;height:auto;position:static;flex-direction:row;align-items:center;border-right:0;border-bottom:1px solid var(--line)}
+  .brand{padding:12px 14px;border-bottom:0;border-right:1px solid var(--line)}
+  .brand h1{font-size:20px}.brand .sub,.brand .tag{display:none}
+  .nav{display:flex;padding:0;flex:1;overflow-x:auto}
+  .nav-item{padding:12px;border-left:0;border-bottom:2px solid transparent}
+  .nav-item.active{border-bottom-color:var(--accent);background:none}
+  .nav-item .idx{font-size:15px;width:auto}.nav-item .lbl .cn{display:none}.nav-item .lbl .en{font-size:11px}
+  .rail-foot{display:none}
+  .content{padding:18px 14px 50px}
+  .topbar{padding:12px 14px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+<div class="shell">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="rail">
+    <div class="brand">
+      <h1>ARK<span>-</span>BOT</h1>
+      <div class="sub">Operations Terminal</div>
+      <div class="tag">RHODES ISLAND // LOCAL</div>
+    </div>
+    <nav class="nav">
+      <div v-for="t in tabs" :key="t.id" class="nav-item" :class="{active:tab===t.id}" @click="tab=t.id">
+        <div class="idx">{{ t.idx }}</div>
+        <div class="lbl">
+          <div class="en">{{ t.en }}</div>
+          <div class="cn">{{ t.cn }}</div>
+        </div>
+      </div>
+    </nav>
+    <div class="rail-foot">
+      <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
+      <div>LINK 127.0.0.1:8090</div>
+      <div>BUILD 2026.10 // v0.2</div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <div class="topbar">
+      <div class="crumb">ARK-BOT / <b>{{ currentTab.en }}</b></div>
+      <div class="grow"></div>
+      <span class="chip yellow">TARGET <b>{{ status.bot_qq }}</b></span>
+      <span class="chip">MUSING <b>{{ musing.config.interval_minutes }}m</b></span>
+      <span class="chip">PROMPTS <b>{{ status.enabled_prompt_count }}/{{ status.prompt_count }}</b></span>
+      <span class="chip">DB <b>{{ fmtSize(status.db_size) }}</b></span>
+      <span class="clock">{{ clock }}</span>
+    </div>
+
+    <div class="content">
+
+      <!-- ==================== 01 COMMAND ==================== -->
+      <div v-if="tab==='command'" class="view">
+        <div class="page-head">
+          <div class="ghost">01</div>
+          <div class="t"><div class="en">Command Control</div><div class="cn">指令及参数控制</div></div>
+          <div class="bar"></div>
+          <div class="meta">LIVE CONFIG</div>
+        </div>
+
+        <div class="grid g2">
+          <!-- system params -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">01</span><span class="tt">System</span><span class="desc">全局行为</span></div>
+            <div class="panel-b">
+              <div class="row between">
+                <div><div class="label">At Only Mode</div><div class="hint">提及模式</div></div>
+                <div class="switch" :class="{on:settings.at_only}" @click="toggleAtOnly"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Dive Inference</div><div class="hint">回复判别</div></div>
+                <div class="seg">
+                  <button :class="{on:settings.infer_mode==='AI'}" @click="saveSettings({infer_mode:'AI'})">AI</button>
+                  <button :class="{on:settings.infer_mode==='PY'}" @click="saveSettings({infer_mode:'PY'})">PY</button>
+                </div>
+              </div>
+              <div class="row" style="margin-top:14px">
+                <div class="grow">
+                  <div class="row between"><span class="label">Dive Probability</span><span class="mono small" style="color:var(--accent)">{{ settings.dive_probability }}%</span></div>
+                  <input type="range" min="0" max="100" step="1" v-model.number="settings.dive_probability" @change="saveSettings({dive_probability:settings.dive_probability})">
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Global Reply Mode</div><div class="hint">全局回复模式</div></div>
+                <div class="seg">
+                  <button :class="{on:settings.default_mode==='扮演'}" @click="saveSettings({default_mode:'扮演'})">扮演</button>
+                  <button :class="{on:settings.default_mode==='聊天'}" @click="saveSettings({default_mode:'聊天'})">聊天</button>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Quote Threshold</div><div class="hint">引用阈值</div></div>
+                <input type="number" min="0" max="200" step="1" v-model.number="settings.quote_threshold" style="width:90px" @change="saveSettings({quote_threshold:settings.quote_threshold})">
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="grow">
+                  <div class="label" style="margin-bottom:5px">Reply Cooldown / 自动回复</div>
+                  <input type="number" min="0" max="3600" step="1" v-model.number="settings.reply_cooldown">
+                </div>
+                <div class="grow">
+                  <div class="label" style="margin-bottom:5px">Mention Cooldown / 提及回复</div>
+                  <input type="number" min="0" max="3600" step="1" v-model.number="settings.reply_cooldown_at">
+                </div>
+                <button class="btn" style="margin-top:17px" @click="saveSettings({reply_cooldown:settings.reply_cooldown,reply_cooldown_at:settings.reply_cooldown_at})">应用</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- vision -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">02</span><span class="tt">Vision</span><span class="desc">识图</span></div>
+            <div class="panel-b">
+              <div class="row between">
+                <div><div class="label">Image Recognition</div><div class="hint">识图总开关</div></div>
+                <div class="switch" :class="{on:settings.vision_enabled}" @click="saveSettings({vision_enabled:!settings.vision_enabled})"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="grow">
+                  <div class="row between"><span class="label">Meme Probability / 表情包识别概率</span><span class="mono small" style="color:var(--accent)">{{ settings.vision_meme_probability }}%</span></div>
+                  <input type="range" min="0" max="100" step="5" v-model.number="settings.vision_meme_probability" @change="saveSettings({vision_meme_probability:settings.vision_meme_probability})">
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- keywords -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">03</span><span class="tt">Triggers</span><span class="desc">提名列表</span></div>
+            <div class="panel-b">
+              <div class="hint" style="margin-bottom:10px">群聊中出现以下任意一个词后视作被提及</div>
+              <div class="row wrap" style="gap:6px">
+                <span v-for="(k,i) in settings.name_keywords" :key="k+i" class="tag y">
+                  <b>{{ k }}</b><span class="x" @click="removeKeyword(i)">×</span>
+                </span>
+                <span v-if="!settings.name_keywords || !settings.name_keywords.length" class="faint small">尚未设置</span>
+              </div>
+              <div class="row" style="margin-top:14px">
+                <input type="text" v-model="newKeyword" placeholder="输入关键词后回车" @keyup.enter="addKeyword">
+                <button class="btn primary" @click="addKeyword">ADD</button>
+              </div>
+              <div class="divider"></div>
+              <div class="kv">
+                <div class="k">MODE</div><div class="v">{{ settings.at_only ? '仅提及触发（AT ONLY）' : '自主互动（' + settings.infer_mode + '）' }}</div>
+                <div class="k">REPLY</div><div class="v">全局 {{ settings.default_mode || '扮演' }} 模式</div>
+                <div class="k">COOLDOWN</div><div class="v">自动 {{ settings.reply_cooldown }}s / 提及 {{ settings.reply_cooldown_at }}s</div>
+                <div class="k">PROB</div><div class="v">{{ settings.dive_probability }}%</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- target ops -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">04</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
+            <div class="panel-b">
+              <div class="row">
+                <input type="text" v-model="targetId" placeholder="QQ号 / group_群号 / group_群号_QQ号">
+                <button class="btn" @click="loadTarget">LOAD</button>
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="grow">
+                  <div class="label" style="margin-bottom:5px">Favorability / 好感度</div>
+                  <input type="number" min="-100" max="100" v-model.number="favorValue" style="width:100%">
+                </div>
+                <button class="btn" style="margin-top:17px" @click="setFavor">设置</button>
+              </div>
+              <div class="divider"></div>
+              <div class="label" style="margin-bottom:5px">Exclusive Persona / 专属人格</div>
+              <textarea v-model="charText" rows="3" placeholder="为空则使用默认人格"></textarea>
+              <div class="row" style="margin-top:8px">
+                <button class="btn primary" @click="saveChar">保存人格</button>
+                <button class="btn danger" @click="clearChar">清除人格</button>
+              </div>
+              <div class="divider"></div>
+              <div class="label" style="margin-bottom:5px">User Persona / 对方人物信息</div>
+              <textarea v-model="personaText" rows="3" placeholder="为空则默认普通群友"></textarea>
+              <div class="row" style="margin-top:8px">
+                <button class="btn primary" @click="savePersona">保存档案</button>
+                <button class="btn danger" @click="clearPersona">清除档案</button>
+              </div>
+              <div class="divider"></div>
+              <div class="row wrap">
+                <button class="btn danger" @click="clearMemory(false)">清空个人记忆</button>
+                <button class="btn danger" @click="clearMemory(true)">清空群共享记忆</button>
+                <span class="hint" style="margin-left:auto">不可撤销</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- command reference -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">05</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
+            <div class="panel-b tight">
+              <pre class="mono small" style="padding:16px;white-space:pre-wrap;line-height:1.9;color:#bdbdbd;max-height:470px;overflow:auto">{{ helpText || '// 暂无指令说明' }}</pre>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- ==================== 02 LOGS ==================== -->
+      <div v-if="tab==='logs'" class="view">
+        <div class="page-head">
+          <div class="ghost">02</div>
+          <div class="t"><div class="en">Log Stream</div><div class="cn">日志事件追踪</div></div>
+          <div class="bar"></div>
+          <div class="meta"><span class="dot" :class="wsOpen?'on':'warn'"></span>{{ wsOpen ? 'LINK ACTIVE' : 'RECONNECTING' }}</div>
+        </div>
+        <section class="panel">
+          <div class="panel-h"><span class="n">ST</span><span class="tt">Standard Output</span><span class="desc">{{ filteredLogs.length }} LINES</span></div>
+          <div class="log-tools">
+            <button v-for="f in logFilters" :key="f.key" class="btn sm"
+              :class="{primary:logFilterSet.includes(f.key)}" @click="toggleFilter(f.key)">{{ f.label }}</button>
+            <div class="grow"></div>
+            <button class="btn sm" :class="{primary:paused}" @click="paused=!paused">{{ paused?'RESUME':'PAUSE' }}</button>
+            <button class="btn sm" @click="logs=[];lastLogKey=''">CLEAR</button>
+            <button class="btn sm" :class="{primary:autoscroll}" @click="autoscroll=!autoscroll">AUTO</button>
+          </div>
+          <div class="logbox" ref="logbox">
+            <div v-for="(l,i) in filteredLogs" :key="i" class="logline" :class="logClass(l)">{{ l }}</div>
+            <div v-if="!filteredLogs.length" class="empty">// NO SIGNAL</div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ==================== 03 MEMORY ==================== -->
+      <div v-if="tab==='memory'" class="view">
+        <div class="page-head">
+          <div class="ghost">03</div>
+          <div class="t"><div class="en">Memory Archive</div><div class="cn">记忆核心</div></div>
+          <div class="bar"></div>
+          <div class="meta">SQLITE + CHROMADB</div>
+        </div>
+
+        <section class="panel" style="margin-bottom:16px">
+          <div class="panel-b">
+            <div class="row wrap">
+              <input type="text" v-model="scope" placeholder="档案名：QQ号 / group_群号 / group_群号_QQ号" style="max-width:420px" @keyup.enter="loadMemory">
+              <button class="btn primary" :disabled="busy.memory" @click="loadMemory">{{ busy.memory?'LOADING':'LOAD' }}</button>
+              <span class="hint">冷记忆按重要度/语义检索</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- context & recall -->
+        <section class="panel" style="margin-bottom:16px">
+          <div class="panel-h"><span class="n">CR</span><span class="tt">Context & Recall</span><span class="desc">上下文窗口与召回过滤</span></div>
+          <div class="panel-b">
+            <div class="row">
+              <div class="grow">
+                <div class="label" style="margin-bottom:5px">Hot Context / 私聊</div>
+                <input type="number" min="1" max="200" step="1" v-model.number="settings.hot_context_private">
+              </div>
+              <div class="grow">
+                <div class="label" style="margin-bottom:5px">Hot Context / 群聊</div>
+                <input type="number" min="1" max="200" step="1" v-model.number="settings.hot_context_group">
+              </div>
+              <button class="btn" style="margin-top:17px" @click="saveSettings({hot_context_private:settings.hot_context_private,hot_context_group:settings.hot_context_group})">应用</button>
+            </div>
+            <div class="divider"></div>
+            <div class="row">
+              <div class="grow">
+                <div class="row between"><span class="label">Recall Threshold / 召回相似度阈值</span><span class="mono small" style="color:var(--accent)">{{ settings.recall_threshold }}</span></div>
+                <input type="range" min="0" max="1" step="0.05" v-model.number="settings.recall_threshold" @change="saveSettings({recall_threshold:settings.recall_threshold})">
+              </div>
+            </div>
+            <div class="hint" style="margin-top:6px">低于此相似度的"回忆"不注入提示词</div>
+          </div>
+        </section>
+
+        <div class="grid g3" style="margin-bottom:16px">
+          <section class="panel">
+            <div class="panel-h"><span class="n">P</span><span class="tt">Profile</span></div>
+            <div class="panel-b">
+              <div class="kv">
+                <div class="k">TARGET</div><div class="v mono">{{ profile.user_id || scope || '—' }}</div>
+                <div class="k">MODE</div><div class="v">{{ profile.mode || '—' }}</div>
+                <div class="k">FAVOR</div><div class="v" style="color:var(--accent)">{{ profile.favorability ?? '—' }}</div>
+                <div class="k">FITNESS</div><div class="v">{{ profile.fitness ?? '—' }}</div>
+              </div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-h"><span class="n">S</span><span class="tt">State</span></div>
+            <div class="panel-b">
+              <div class="kv" v-if="profile.state && Object.keys(profile.state).length">
+                <template v-for="(v,k) in profile.state" :key="k">
+                  <div class="k">{{ k.toUpperCase() }}</div><div class="v">{{ v }}</div>
+                </template>
+              </div>
+              <div v-else class="empty" style="padding:10px">// EMPTY STATE</div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-h"><span class="n">H</span><span class="tt">Hot Layer</span><span class="desc">{{ hot.length }} MSGS</span></div>
+            <div class="panel-b tight">
+              <div class="hot-list">
+                <div v-for="(m,i) in hot" :key="m.ts" class="hot-item" :class="m.role">
+                  <div class="r">{{ m.role==='user'?'USER':'ASSISTANT' }}</div>
+                  <div class="c">{{ m.content }}</div>
+                  <div class="ops">
+                    <button class="btn sm" @click="openHotEdit(m)">EDIT</button>
+                    <button class="btn sm danger" @click="delHot(m)">DEL</button>
+                  </div>
+                </div>
+                <div v-if="!hot.length" class="empty">// NO HOT MEMORY</div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="grid g2">
+          <section class="panel">
+            <div class="panel-h"><span class="n">V</span><span class="tt">Vector Store</span><span class="desc">{{ vectors.length }} RECORDS</span></div>
+            <div class="panel-b tight" style="max-height:460px;overflow:auto">
+              <table class="vec-table">
+                <thead><tr><th>TYPE</th><th>CONTENT</th><th>IMP</th><th>VAL/ARO</th><th>CONF</th><th style="width:104px"></th></tr></thead>
+                <tbody>
+                  <tr v-for="m in vectors" :key="m.id">
+                    <td><span class="tag" :class="m.type==='musing'?'y':'ghost'">{{ m.type.toUpperCase() }}</span></td>
+                    <td class="content">{{ m.content }}</td>
+                    <td class="mono" style="color:var(--accent)">{{ (+m.importance).toFixed(2) }}</td>
+                    <td class="mono faint">{{ (+m.valence).toFixed(2) }} / {{ (+m.arousal).toFixed(2) }}</td>
+                    <td class="mono" :style="{color:m.confidence<0.6?'#ff8a80':'#9ae6b4'}">{{ (+m.confidence).toFixed(2) }}</td>
+                    <td><div class="ops">
+                      <button class="btn sm" @click="openVecEdit(m)">EDIT</button>
+                      <button class="btn sm danger" @click="delVec(m)">DEL</button>
+                    </div></td>
+                  </tr>
+                  <tr v-if="!vectors.length"><td colspan="6"><div class="empty">// NO VECTOR MEMORY</div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-h"><span class="n">Q</span><span class="tt">Semantic Query</span><span class="desc">RAG 模拟</span></div>
+            <div class="panel-b">
+              <div class="row">
+                <input type="text" v-model="searchQuery" placeholder="输入语句测试召回内容" @keyup.enter="search">
+                <button class="btn primary" :disabled="busy.search" @click="search">{{ busy.search?'...':'RUN' }}</button>
+              </div>
+              <div class="row">
+                <input type="text" v-model="searchScopes" placeholder="检索范围，逗号分隔（默认为当前档案）">
+              </div>
+              <div class="divider"></div>
+              <div v-for="(r,i) in results" :key="i" style="padding:9px 0;border-bottom:1px solid #1a2330">
+                <div class="row between" style="margin-bottom:4px">
+                  <span class="tag" :class="r.type==='musing'?'y':'ghost'">{{ r.type.toUpperCase() }}</span>
+                  <div class="score"><div class="bar"><i :style="{width:(r.score*100)+'%'}"></i></div><span class="n">{{ r.score.toFixed(3) }}</span></div>
+                </div>
+                <div class="small" style="line-height:1.6;color:#d0d0d0">{{ r.content }}</div>
+              </div>
+              <div v-if="!results.length" class="empty">// NO RECALL</div>
+            </div>
+          </section>
+
+          <section class="panel" style="grid-column:1/-1">
+            <div class="panel-h"><span class="n">E</span><span class="tt">Embedding Inspector</span><span class="desc">向量化模拟</span></div>
+            <div class="panel-b">
+              <div class="row">
+                <input type="text" v-model="embedText" placeholder="输入文本，查看 embedding 结果" @keyup.enter="runEmbed">
+                <button class="btn primary" :disabled="busy.embed" @click="runEmbed">{{ busy.embed?'...':'EMBED' }}</button>
+              </div>
+              <div class="row" style="margin-top:12px" v-if="embedInfo">
+                <span class="tag c">DIM <b>{{ embedInfo.dim }}</b></span>
+                <span class="tag">NORM <b>{{ embedInfo.norm }}</b></span>
+                <span class="tag ghost">PREVIEW TOP-32</span>
+              </div>
+              <div class="bars" v-if="embedInfo">
+                <i v-for="(v,i) in embedInfo.preview" :key="i" :style="{height:Math.min(100,Math.abs(v)*260)+'%',background:v>=0?'linear-gradient(180deg,var(--accent),#0b5c80)':'linear-gradient(180deg,#3ddcbe,#134d43)'}"></i>
+              </div>
+              <div v-if="embedInfo" class="mono faint small" style="margin-top:8px;word-break:break-all">{{ embedInfo.preview.join(', ') }}</div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- ==================== 04 PROMPTS ==================== -->
+      <div v-if="tab==='prompts'" class="view">
+        <div class="page-head">
+          <div class="ghost">04</div>
+          <div class="t"><div class="en">Prompt Registry</div><div class="cn">提示词管理</div></div>
+          <div class="bar"></div>
+          <div class="meta">HOT RELOAD · NO RESTART</div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-h"><span class="n">PR</span><span class="tt">Files</span><span class="desc">{{ promptItems.length }} FILES</span>
+            <button class="btn sm primary" style="margin-left:auto" @click="openCreate">+ NEW FILE</button>
+          </div>
+          <div class="panel-b tight">
+            <table class="plist">
+              <thead><tr><th style="width:44px">#</th><th>FILE</th><th style="width:240px">FLAGS</th><th style="width:90px">STATE</th><th style="width:210px"></th></tr></thead>
+              <tbody>
+                <tr v-for="(p,i) in promptItems" :key="p.file">
+                  <td class="mono faint">{{ String(i+1).padStart(2,'0') }}</td>
+                  <td>
+                    <div class="fname">{{ p.file }}</div>
+                    <div class="fmeta">{{ fmtSize(p.size) }} · {{ p.exists ? timeStr(p.mtime) : 'MISSING' }}</div>
+                  </td>
+                  <td>
+                    <span v-if="p.character" class="tag y">PERSONA</span>
+                    <span v-if="p.format" class="tag">FORMAT</span>
+                    <span v-if="p.chat" class="tag">CHAT</span>
+                    <span v-if="p.internal" class="tag c">INTERNAL</span>
+                    <span v-if="!p.character&&!p.format&&!p.chat&&!p.internal" class="tag ghost">BASE</span>
+                  </td>
+                  <td><div class="switch" :class="{on:p.enabled}" @click="togglePrompt(p)"></div></td>
+                  <td>
+                    <div class="ops">
+                      <button class="btn sm icon" :disabled="i===0" @click="movePrompt(i,-1)">↑</button>
+                      <button class="btn sm icon" :disabled="i===promptItems.length-1" @click="movePrompt(i,1)">↓</button>
+                      <button class="btn sm" @click="setCharacterPrompt(p)" :class="{primary:p.character}">PERSONA</button>
+                      <button class="btn sm" @click="openEdit(p)">EDIT</button>
+                      <button class="btn sm danger" @click="deletePrompt(p)">DEL</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="panel" style="margin-top:16px">
+          <div class="panel-b">
+            <div class="kv">
+              <div class="k">BASE</div><div class="v">始终加载（未标记的普通文件）</div>
+              <div class="k">PERSONA</div><div class="v">默认人格文件，仅一个生效；专属人格存在时自动跳过</div>
+              <div class="k">FORMAT</div><div class="v">格式/字数要求，聊天模式下自动跳过</div>
+              <div class="k">CHAT</div><div class="v">聊天模式专用文件</div>
+              <div class="k">INTERNAL</div><div class="v">分任务提示词（总结/判断/打分/发散），不进入人格拼装</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 05 ARCHIVE ==================== -->
+      <div v-if="tab==='archive'" class="view">
+        <div class="page-head">
+          <div class="ghost">05</div>
+          <div class="t"><div class="en">Archive Roster</div><div class="cn">档案汇总 · 批量管理</div></div>
+          <div class="bar"></div>
+          <div class="meta">{{ archives.length }} RECORDS</div>
+        </div>
+
+        <section class="panel" style="margin-bottom:16px">
+          <div class="panel-b">
+            <div class="row wrap">
+              <span class="chip">ALL <b>{{ archives.length }}</b></span>
+              <span class="chip">PRIVATE <b>{{ archiveCounts.private }}</b></span>
+              <span class="chip">GROUP <b>{{ archiveCounts.group }}</b></span>
+              <span class="chip">MEMBER <b>{{ archiveCounts.member }}</b></span>
+              <div class="grow"></div>
+              <span class="hint mono">JSON: data/archives.json</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><span class="n">AR</span><span class="tt">Archives</span><span class="desc">选中后可批量操作</span></div>
+          <div class="panel-b" style="border-bottom:1px solid var(--line)">
+            <div class="row wrap">
+              <input type="text" v-model="archiveSearch" placeholder="搜索 QQ / 群号 / 昵称" style="max-width:260px">
+              <select v-model="archiveType" style="width:auto">
+                <option value="">全部类型</option>
+                <option value="private">私聊</option>
+                <option value="group">群聊</option>
+                <option value="member">群友</option>
+              </select>
+              <button class="btn sm" @click="selectAllArchives(true)">全选</button>
+              <button class="btn sm" @click="selectAllArchives(false)">清空选择</button>
+              <div class="grow"></div>
+              <span class="mono small" style="color:var(--accent)">已选 {{ archiveSel.length }}</span>
+            </div>
+            <div class="row wrap" style="margin-top:10px">
+              <button class="btn sm" :disabled="!archiveSel.length" @click="copySelectedArchives">复制 QQ</button>
+              <button class="btn sm" @click="syncArchives">同步 JSON</button>
+              <button class="btn sm" @click="downloadArchives">下载 JSON</button>
+              <div class="grow"></div>
+              <button class="btn sm danger" :disabled="!archiveSel.length" @click="batchClear(false)">清空选中记忆</button>
+              <button class="btn sm danger" :disabled="!archiveSel.length" @click="batchClear(true)">删除选中档案</button>
+            </div>
+            <div class="hint" style="margin-top:8px">清空记忆 = 历史 + 向量 + 状态，保留人设；删除档案 = 连人设一起删，不可恢复</div>
+          </div>
+          <div class="panel-b tight" style="max-height:calc(100vh - 430px);overflow:auto">
+            <table class="plist">
+              <thead><tr>
+                <th style="width:36px"><input type="checkbox" :checked="allArchiveSelected" @change="selectAllArchives($event.target.checked)"></th>
+                <th>ARCHIVE</th><th style="width:80px">TYPE</th><th style="width:150px">NAME</th>
+                <th style="width:70px">HIST</th><th style="width:70px">VEC</th><th style="width:130px">LAST</th>
+                <th style="width:70px"></th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="a in filteredArchives" :key="a.user_id">
+                  <td><input type="checkbox" :value="a.user_id" v-model="archiveSel"></td>
+                  <td>
+                    <div class="fname">{{ a.user_id }}</div>
+                    <div class="fmeta mono">{{ a.group_id ? ('群 ' + a.group_id) : (a.qq ? ('QQ ' + a.qq) : '') }}</div>
+                  </td>
+                  <td><span class="tag" :class="a.type==='group'?'c':(a.type==='member'?'':'y')">{{ typeLabel(a.type) }}</span></td>
+                  <td class="small">{{ a.display_name || '—' }}</td>
+                  <td class="mono">{{ a.history_count }}</td>
+                  <td class="mono" style="color:var(--accent)">{{ a.vector_count }}</td>
+                  <td class="mono faint small">{{ timeStr(a.last_active) }}</td>
+                  <td><button class="btn sm danger" @click="deleteOneArchive(a.user_id)">DEL</button></td>
+                </tr>
+                <tr v-if="!filteredArchives.length"><td colspan="8"><div class="empty">// NO ARCHIVE</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ==================== 06 MUSING ==================== -->
+      <div v-if="tab==='musing'" class="view">
+        <div class="page-head">
+          <div class="ghost">06</div>
+          <div class="t"><div class="en">Musing Schedule</div><div class="cn">发散调度 · 按档案</div></div>
+          <div class="bar"></div>
+          <div class="meta">每 60 秒检查一次到期档案</div>
+        </div>
+
+        <section class="panel" style="margin-bottom:16px">
+          <div class="panel-h"><span class="n">01</span><span class="tt">Global</span><span class="desc">全局频率与默认策略</span></div>
+          <div class="panel-b">
+            <div class="row between">
+              <div>
+                <div class="label">Master Switch / 总开关</div>
+              </div>
+              <div class="switch" :class="{on:musing.config.interval_minutes > 0}" @click="toggleGlobalMusing"></div>
+            </div>
+            <div class="divider"></div>
+            <div class="row wrap">
+              <div class="grow">
+                <div class="row between"><span class="label">Global Interval / 全局频率</span>
+                  <span class="mono small" style="color:var(--accent)">{{ musing.config.interval_minutes }} 分钟</span></div>
+                <input type="range" min="0" max="360" step="5" v-model.number="musing.config.interval_minutes">
+              </div>
+              <input type="number" min="0" max="360" step="1" v-model.number="musing.config.interval_minutes" style="width:96px">
+              <button class="btn primary" @click="applyMusingConfig">APPLY</button>
+            </div>
+            <div class="row wrap" style="margin-top:8px">
+              <span class="hint">快捷：</span>
+              <button v-for="m in [30,60,120,240,360]" :key="m" class="btn sm" @click="setGlobalMusing(m)">{{ m }}m</button>
+            </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="grow">
+                  <div class="row between"><span class="label">IMP Threshold / 发散素材重要度门槛</span>
+                    <span class="mono small" style="color:var(--accent)">{{ musing.config.min_importance }}</span></div>
+                  <input type="range" min="0" max="1" step="0.05" v-model.number="musing.config.min_importance" @change="applyMusingConfig">
+                </div>
+              </div>
+              <div class="hint" style="margin-top:6px">只有重要度 ≥ 此值的记忆才会被拿来发散</div>
+              <div class="divider"></div>
+              <div class="grid g2">
+              <div class="row between">
+                <div><div class="label">Private Default / 私聊默认</div><div class="hint">未单独设置的私聊</div></div>
+                <div class="switch" :class="{on:musing.config.private_enabled}" @click="toggleMusingCategory('private_enabled')"></div>
+              </div>
+              <div class="row between">
+                <div><div class="label">Group Default / 群聊默认</div><div class="hint">未单独设置的群聊</div></div>
+                <div class="switch" :class="{on:musing.config.group_enabled}" @click="toggleMusingCategory('group_enabled')"></div>
+              </div>
+            </div>
+            <div class="divider"></div>
+            <div class="hint" style="line-height:1.9">
+              <b style="color:var(--accent)">继承条件：</b>档案自己的开关/频率 &gt; 私聊/群聊默认开关 &gt; 全局频率。
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-h"><span class="n">02</span><span class="tt">Per Archive</span><span class="desc">批量开关 / 单独频率</span></div>
+          <div class="panel-b" style="border-bottom:1px solid var(--line)">
+            <div class="row wrap">
+              <input type="text" v-model="musingSearch" placeholder="搜索档案" style="max-width:220px">
+              <select v-model="musingType" style="width:auto">
+                <option value="">全部类型</option>
+                <option value="private">私聊</option>
+                <option value="group">群聊</option>
+                <option value="member">群友</option>
+              </select>
+              <button class="btn sm" @click="selectAllMusing(true)">全选</button>
+              <button class="btn sm" @click="selectAllMusing(false)">清空</button>
+              <div class="grow"></div>
+              <span class="mono small" style="color:var(--accent)">已选 {{ musingSel.length }}</span>
+            </div>
+            <div class="row wrap" style="margin-top:10px">
+              <button class="btn sm" :disabled="!musingSel.length" @click="bulkMusing('on')">批量开启</button>
+              <button class="btn sm" :disabled="!musingSel.length" @click="bulkMusing('off')">批量关闭</button>
+              <input type="number" min="0" max="360" step="1" v-model.number="bulkInterval" placeholder="分钟" style="width:90px">
+              <button class="btn sm" :disabled="!musingSel.length" @click="bulkMusing('interval')">应用间隔</button>
+              <button class="btn sm" :disabled="!musingSel.length" @click="bulkMusing('reset')">恢复默认</button>
+            </div>
+          </div>
+          <div class="panel-b tight" style="max-height:calc(100vh - 520px);overflow:auto">
+            <table class="plist">
+              <thead><tr>
+                <th style="width:36px"><input type="checkbox" :checked="allMusingSelected" @change="selectAllMusing($event.target.checked)"></th>
+                <th>ARCHIVE</th><th style="width:80px">TYPE</th><th style="width:130px">LAST</th>
+                <th style="width:80px">STATE</th><th style="width:120px">INTERVAL</th><th style="width:80px"></th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="s in filteredMusingScopes" :key="s.scope">
+                  <td><input type="checkbox" :value="s.scope" v-model="musingSel"></td>
+                  <td>
+                    <div class="fname">{{ s.scope }}</div>
+                    <div class="fmeta mono">
+                      <span v-if="s.display_name">{{ s.display_name }} · </span>
+                      <span v-if="s.override" style="color:var(--accent)">已覆盖</span>
+                      <span v-else>继承中</span>
+                    </div>
+                  </td>
+                  <td><span class="tag" :class="s.type==='group'?'c':(s.type==='member'?'':'y')">{{ typeLabel(s.type) }}</span></td>
+                  <td class="mono faint small">{{ s.last_musing ? timeStr(s.last_musing) : '从未' }}</td>
+                  <td><div class="switch" :class="{on:s.effective_enabled}" @click="toggleMusingScope(s)"></div></td>
+                  <td>
+                    <input type="number" min="0" max="360" step="1"
+                      :value="s.override && s.override.interval_minutes != null ? s.override.interval_minutes : ''"
+                      :placeholder="'继承 ' + s.effective_interval"
+                      style="width:100px"
+                      @change="setMusingIntervalFromInput(s, $event.target.value)">
+                  </td>
+                  <td><button class="btn sm" @click="resetMusingTarget(s.scope)">恢复</button></td>
+                </tr>
+                <tr v-if="!filteredMusingScopes.length"><td colspan="7"><div class="empty">// NO ARCHIVE</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ==================== 07 MODEL ==================== -->
+      <div v-if="tab==='model'" class="view">
+        <div class="page-head">
+          <div class="ghost">07</div>
+          <div class="t"><div class="en">Model Routing</div><div class="cn">模型路由 · 端点管理</div></div>
+          <div class="bar"></div>
+          <div class="meta">api.json · HOT RELOAD</div>
+        </div>
+
+        <div class="grid g2" style="margin-bottom:16px">
+          <!-- routes -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">RT</span><span class="tt">Routes</span><span class="desc">任务 → 端点</span></div>
+            <div class="panel-b">
+              <div class="row between">
+                <div><div class="label">Main / 主模型</div><div class="hint">聊天回复</div></div>
+                <select :value="models.routes.main" @change="setRoute('main',$event.target.value)" style="width:220px">
+                  <option v-for="p in models.profiles" :key="p.id" :value="p.id">{{ p.name }} · {{ p.model }}</option>
+                </select>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Sub / 分模型</div><div class="hint">判断 / 总结 / 打分 / 发散</div></div>
+                <select :value="models.routes.sub" @change="setRoute('sub',$event.target.value)" style="width:220px">
+                  <option v-for="p in models.profiles" :key="p.id" :value="p.id">{{ p.name }} · {{ p.model }}</option>
+                </select>
+              </div>
+              <div class="divider"></div>
+            </div>
+          </section>
+
+          <!-- profile form -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">PF</span><span class="tt">{{ profileForm.id ? 'Edit Profile' : 'New Profile' }}</span><span class="desc">{{ profileForm.id ? '编辑端点' : '新建端点' }}</span></div>
+            <div class="panel-b">
+              <div class="row">
+                <div class="grow"><div class="label" style="margin-bottom:5px">Name / 备注名</div>
+                  <input type="text" v-model="profileForm.name" placeholder=""></div>
+                <div class="grow"><div class="label" style="margin-bottom:5px">Model / 模型名</div>
+                  <input type="text" v-model="profileForm.model" placeholder=""></div>
+              </div>
+              <div class="row" style="margin-top:12px">
+                <div class="grow"><div class="label" style="margin-bottom:5px">Endpoint / 端点 URL</div>
+                  <input type="text" v-model="profileForm.url" placeholder="https://api.example.com/v1"></div>
+              </div>
+
+              <div class="row" style="margin-top:12px">
+                <div class="grow"><div class="label" style="margin-bottom:5px">API KEY{{ profileForm.id ? '（留空 = 保持不变）' : '' }}</div>
+                  <input type="text" v-model="profileForm.key" :placeholder="profileForm.id ? '留空保持不变' : ''"></div>
+              </div>
+              <div class="row" style="margin-top:14px">
+                <button class="btn primary" @click="saveProfile">{{ profileForm.id ? '保存修改' : 'ADD PROFILE' }}</button>
+                <button class="btn" v-if="profileForm.id" @click="resetProfileForm">取消编辑</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- profile list -->
+        <section class="panel">
+          <div class="panel-h"><span class="n">LS</span><span class="tt">Profiles</span><span class="desc">{{ models.profiles.length }} ENDPOINTS</span></div>
+          <div class="panel-b tight">
+            <table class="plist">
+              <thead><tr><th style="width:44px">#</th><th>PROFILE</th><th>ENDPOINT</th><th style="width:170px">KEY</th><th style="width:150px">USED BY</th><th style="width:150px"></th></tr></thead>
+              <tbody>
+                <tr v-for="(p,i) in models.profiles" :key="p.id">
+                  <td class="mono faint">{{ String(i+1).padStart(2,'0') }}</td>
+                  <td>
+                    <div class="fname">{{ p.name }}</div>
+                    <div class="fmeta mono">{{ p.model }}</div>
+                  </td>
+                  <td class="mono small" style="word-break:break-all">{{ p.url }}</td>
+                  <td class="mono faint small">{{ p.key_masked || '—' }}</td>
+                  <td>
+                    <span v-if="models.routes.main===p.id" class="tag y">MAIN</span>
+                    <span v-if="models.routes.sub===p.id" class="tag c">SUB</span>
+                    <span v-if="models.routes.main!==p.id && models.routes.sub!==p.id" class="tag ghost">IDLE</span>
+                  </td>
+                  <td>
+                    <div class="ops">
+                      <button class="btn sm" @click="editProfile(p)">EDIT</button>
+                      <button class="btn sm danger" @click="deleteProfile(p)">DEL</button>
+                    </div>
+                  </td>
+                </tr>
+                <tr v-if="!models.profiles.length"><td colspan="6"><div class="empty">// NO ENDPOINT</div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+    </div><!-- /content -->
+
+    <!-- prompt editor modal -->
+    <div class="mask" v-if="editing" @click.self="editing=null">
+      <div class="modal">
+        <div class="modal-h">
+          <span class="tag y">EDIT</span>
+          <span class="tt">{{ editing.file }}</span>
+          <div class="grow"></div>
+          <button class="btn sm" @click="editing=null">CLOSE</button>
+        </div>
+        <div class="modal-b">
+          <textarea v-model="editing.content" spellcheck="false"></textarea>
+          <div class="hint" style="margin-top:8px">保存后下一次消息立即生效，无需重启 bot。</div>
+        </div>
+        <div class="modal-f">
+          <button class="btn" @click="editing=null">取消</button>
+          <button class="btn primary" @click="saveEdit">保存并生效</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- prompt create modal -->
+    <div class="mask" v-if="creating" @click.self="creating=null">
+      <div class="modal">
+        <div class="modal-h">
+          <span class="tag y">NEW</span>
+          <span class="tt">Create Prompt File</span>
+        </div>
+        <div class="modal-b">
+          <div class="row">
+            <input type="text" v-model="creating.file" placeholder="文件名，例如 12_补充设定.txt">
+          </div>
+          <div class="row wrap" style="margin-top:12px">
+            <label class="tag" style="cursor:pointer"><input type="checkbox" v-model="creating.character"> PERSONA</label>
+            <label class="tag" style="cursor:pointer"><input type="checkbox" v-model="creating.format"> FORMAT</label>
+            <label class="tag" style="cursor:pointer"><input type="checkbox" v-model="creating.chat"> CHAT</label>
+            <label class="tag" style="cursor:pointer"><input type="checkbox" v-model="creating.internal"> INTERNAL</label>
+          </div>
+          <textarea v-model="creating.content" placeholder="提示词内容…" style="margin-top:12px;min-height:220px"></textarea>
+        </div>
+        <div class="modal-f">
+          <button class="btn" @click="creating=null">取消</button>
+          <button class="btn primary" @click="createPrompt">创建</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- hot memory editor modal -->
+    <div class="mask" v-if="editingHot" @click.self="editingHot=null">
+      <div class="modal">
+        <div class="modal-h">
+          <span class="tag y">EDIT</span>
+          <span class="tt">Hot Memory · {{ editingHot.role==='user'?'USER':'ASSISTANT' }}</span>
+          <div class="grow"></div>
+          <button class="btn sm" @click="editingHot=null">CLOSE</button>
+        </div>
+        <div class="modal-b">
+          <textarea v-model="editingHot.content" spellcheck="false" style="min-height:160px"></textarea>
+          <div class="hint" style="margin-top:8px">改的是上下文里这一条消息，保存后立即影响后续回复。</div>
+        </div>
+        <div class="modal-f">
+          <button class="btn" @click="editingHot=null">取消</button>
+          <button class="btn primary" @click="saveHotEdit">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- vector memory editor modal -->
+    <div class="mask" v-if="editingVec" @click.self="editingVec=null">
+      <div class="modal">
+        <div class="modal-h">
+          <span class="tag y">EDIT</span>
+          <span class="tt">Vector Memory · {{ editingVec.type.toUpperCase() }}</span>
+          <div class="grow"></div>
+          <button class="btn sm" @click="editingVec=null">CLOSE</button>
+        </div>
+        <div class="modal-b">
+          <textarea v-model="editingVec.content" spellcheck="false" style="min-height:160px"></textarea>
+          <div class="row" style="margin-top:12px;align-items:center">
+            <span class="label">IMP / 重要度</span>
+            <input type="number" min="0" max="1" step="0.05" v-model.number="editingVec.importance" style="width:110px">
+          </div>
+          <div class="hint" style="margin-top:8px">改内容会重新计算 embedding；只调重要度不会。</div>
+        </div>
+        <div class="modal-f">
+          <button class="btn" @click="editingVec=null">取消</button>
+          <button class="btn primary" @click="saveVecEdit">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toasts">
+      <div v-for="(t,i) in toasts" :key="i" class="toast" :class="{err:t.err}"><b>{{ t.title }}</b>{{ t.msg }}</div>
+    </div>
+  </main>
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+<script>if(!window.Vue){document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"><\/script>')}</script>
+<script>
+const { createApp } = Vue;
+
+createApp({
+  data() {
+    return {
+      tab: 'command',
+      tabs: [
+        { id:'command', idx:'01', en:'Command', cn:'指令控制' },
+        { id:'logs',    idx:'02', en:'Log Stream', cn:'实时日志' },
+        { id:'memory',  idx:'03', en:'Memory', cn:'记忆检索' },
+        { id:'prompts', idx:'04', en:'Prompts', cn:'提示词' },
+        { id:'archive', idx:'05', en:'Archive', cn:'档案汇总' },
+        { id:'musing',  idx:'06', en:'Musing', cn:'发散调度' },
+        { id:'model',   idx:'07', en:'Model', cn:'模型路由' },
+      ],
+      clock: '--:--:--',
+      status: { log_active:false, db_size:0, prompt_count:0, enabled_prompt_count:0, bot_qq:'' },
+      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3 },
+      musing: { config:{ interval_minutes:120, private_enabled:true, group_enabled:true, min_importance:0.7 }, overrides:{}, scopes:[] },
+      musingSel: [], musingSearch: '', musingType: '', bulkInterval: null,
+      archives: [], archiveSel: [], archiveSearch: '', archiveType: '',
+      helpText: '',
+      newKeyword: '',
+      targetId: '', favorValue: 0, charText: '', personaText: '',
+      profile: {}, hot: [], vectors: [],
+      scope: '', searchQuery: '', searchScopes: '', results: [],
+      embedText: '', embedInfo: null,
+      logs: [], paused: false, autoscroll: true, wsOpen: false, lastLogKey: '',
+      logFilterSet: [], 
+      logFilters: [
+        {key:'judge',label:'判断'},{key:'rag',label:'RAG'},{key:'vector',label:'向量'},
+        {key:'memory',label:'记忆'},{key:'reply',label:'回复'},{key:'freq',label:'频率'},
+        {key:'musing',label:'发散'},{key:'error',label:'错误'},
+      ],
+      promptItems: [],
+      models: { profiles: [], routes: { main:'', sub:'' } },
+      profileForm: { id:null, name:'', url:'', key:'', model:'' },
+      busy: { search:false, embed:false, memory:false, target:false },
+      editing: null, creating: null, editingHot: null, editingVec: null,
+      toasts: [],
+    };
+  },
+  computed: {
+    currentTab(){ return this.tabs.find(t=>t.id===this.tab) || this.tabs[0]; },
+    archiveCounts(){
+      const c = { private:0, group:0, member:0 };
+      for(const a of this.archives) if(c[a.type]!==undefined) c[a.type]++;
+      return c;
+    },
+    filteredArchives(){
+      const q = this.archiveSearch.trim().toLowerCase();
+      return this.archives.filter(a=>{
+        if(this.archiveType && a.type!==this.archiveType) return false;
+        if(!q) return true;
+        return (a.user_id||'').toLowerCase().includes(q)
+          || (a.display_name||'').toLowerCase().includes(q)
+          || (a.qq||'').includes(q) || (a.group_id||'').includes(q);
+      });
+    },
+    allArchiveSelected(){
+      const list = this.filteredArchives;
+      return list.length > 0 && list.every(a=>this.archiveSel.includes(a.user_id));
+    },
+    filteredMusingScopes(){
+      const q = this.musingSearch.trim().toLowerCase();
+      return this.musing.scopes.filter(s=>{
+        if(this.musingType && s.type!==this.musingType) return false;
+        if(!q) return true;
+        return (s.scope||'').toLowerCase().includes(q) || (s.display_name||'').toLowerCase().includes(q);
+      });
+    },
+    allMusingSelected(){
+      const list = this.filteredMusingScopes;
+      return list.length > 0 && list.every(s=>this.musingSel.includes(s.scope));
+    },
+    filteredLogs(){
+      if(!this.logFilterSet.length) return this.logs;
+      return this.logs.filter(l=>{
+        const c = this.logClass(l);
+        return this.logFilterSet.includes(c);
+      });
+    }
+  },
+  mounted() {
+    this.tick(); setInterval(this.tick, 1000);
+    this.refreshStatus(); setInterval(this.refreshStatus, 15000);
+    this.loadSettings(); this.loadHelp(); this.loadPrompts(); this.loadMusing(); this.loadArchives();
+    this.connectWS();
+    this.$watch('tab', v => {
+      if(v==='prompts') this.loadPrompts();
+      if(v==='archive') this.loadArchives();
+      if(v==='musing') this.loadMusing();
+      if(v==='model') this.loadModels();
+    });
+    this.$watch(()=>this.filteredLogs.length, ()=>{ if(this.autoscroll) this.scrollBottom(); });
+  },
+  methods: {
+    tick(){
+      const d = new Date();
+      this.clock = [d.getHours(),d.getMinutes(),d.getSeconds()].map(n=>String(n).padStart(2,'0')).join(':');
+    },
+    fmtSize(n){ if(!n) return '—'; if(n<1024) return n+'B'; if(n<1048576) return (n/1024).toFixed(1)+'KB'; return (n/1048576).toFixed(1)+'MB'; },
+    timeStr(ts){ if(!ts) return '—'; const d=new Date(ts*1000); return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; },
+    toast(title, msg, err=false){
+      const t={title,msg,err}; this.toasts.push(t);
+      setTimeout(()=>{ const i=this.toasts.indexOf(t); if(i>=0) this.toasts.splice(i,1); }, 3600);
+    },
+    async api(path, opts={}){
+      const res = await fetch(path, {
+        headers: {'Content-Type':'application/json'},
+        ...opts,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      if(!res.ok){
+        let detail = res.statusText;
+        try { const j = await res.json(); detail = j.detail || detail; } catch(e){}
+        throw new Error(detail);
+      }
+      return res.json();
+    },
+    async guard(fn, okMsg){
+      try { await fn(); if(okMsg) this.toast('OK', okMsg); }
+      catch(e){ this.toast('ERROR', e.message, true); }
+    },
+
+    /* ---- status/settings ---- */
+    async refreshStatus(){ try { this.status = await this.api('/api/status'); } catch(e){} },
+    async loadSettings(){ try { this.settings = await this.api('/api/settings'); } catch(e){} },
+    async loadHelp(){ try { this.helpText = (await this.api('/api/help')).text; } catch(e){} },
+    async saveSettings(patch){
+      await this.guard(async()=>{ this.settings = await this.api('/api/settings',{method:'POST',body:patch}); }, '设置已保存');
+    },
+    async toggleAtOnly(){
+      await this.guard(async()=>{ this.settings = await this.api('/api/settings',{method:'POST',body:{at_only:!this.settings.at_only}}); },
+        '已切换为 ' + (!this.settings.at_only ? '仅提及触发':'自主互动'));
+    },
+    addKeyword(){
+      const v = this.newKeyword.trim(); if(!v) return;
+      if(this.settings.name_keywords.includes(v)) { this.newKeyword=''; return; }
+      const list = [...this.settings.name_keywords, v];
+      this.newKeyword='';
+      this.saveSettings({name_keywords:list});
+    },
+    removeKeyword(i){
+      const list = this.settings.name_keywords.filter((_,idx)=>idx!==i);
+      this.saveSettings({name_keywords:list});
+    },
+
+    /* ---- musing ---- */
+    async loadMusing(){ try { this.musing = await this.api('/api/musing'); } catch(e){} },
+    async applyMusingConfig(){
+      await this.guard(async()=>{
+        this.musing = await this.api('/api/musing/config',{method:'POST',body:{
+          interval_minutes: this.musing.config.interval_minutes,
+          private_enabled: this.musing.config.private_enabled,
+          group_enabled: this.musing.config.group_enabled,
+          min_importance: this.musing.config.min_importance,
+        }});
+      }, '发散配置已更新');
+    },
+    async toggleMusingCategory(key){
+      const cfg = { ...this.musing.config, [key]: !this.musing.config[key] };
+      await this.guard(async()=>{
+        this.musing = await this.api('/api/musing/config',{method:'POST',body:{
+          interval_minutes: cfg.interval_minutes,
+          private_enabled: cfg.private_enabled,
+          group_enabled: cfg.group_enabled,
+          min_importance: cfg.min_importance,
+        }});
+      }, '已切换');
+    },
+    async resetMusingTarget(scope){
+      if(!scope) return this.toast('WARN','请先填写档案名',true);
+      await this.guard(async()=>{ this.musing = await this.api('/api/musing/target/reset',{method:'POST',body:{scope}}); }, '已恢复继承');
+    },
+    async toggleMusingScope(s){
+      await this.guard(async()=>{
+        this.musing = await this.api('/api/musing/target',{method:'POST',body:{scope:s.scope, enabled:!s.effective_enabled}});
+      }, s.effective_enabled ? '已单独关闭' : '已单独开启');
+    },
+    async setMusingIntervalFromInput(s, value){
+      if(value === '') return this.resetMusingTarget(s.scope);
+      const n = Number(value);
+      if(!isFinite(n) || n < 0 || n > 360) return this.toast('WARN','间隔范围 0-360 分钟',true);
+      await this.guard(async()=>{
+        this.musing = await this.api('/api/musing/target',{method:'POST',body:{scope:s.scope, interval_minutes:n}});
+      }, '已设置 ' + n + ' 分钟');
+    },
+    setGlobalMusing(m){
+      this.musing.config.interval_minutes = m;
+      this.applyMusingConfig();
+    },
+    toggleGlobalMusing(){
+      this.setGlobalMusing(this.musing.config.interval_minutes > 0 ? 0 : 120);
+    },
+    selectAllMusing(flag){
+      if(flag){
+        const add = this.filteredMusingScopes.map(s=>s.scope).filter(x=>!this.musingSel.includes(x));
+        this.musingSel.push(...add);
+      } else {
+        this.musingSel = [];
+      }
+    },
+    async bulkMusing(action){
+      if(!this.musingSel.length) return;
+      const body = { scopes: this.musingSel };
+      if(action === 'on') body.enabled = true;
+      else if(action === 'off') body.enabled = false;
+      else if(action === 'reset') body.reset = true;
+      else if(action === 'interval'){
+        if(this.bulkInterval === null || this.bulkInterval === '') return this.toast('WARN','先填写间隔分钟',true);
+        const n = Number(this.bulkInterval);
+        if(!isFinite(n) || n < 0 || n > 360) return this.toast('WARN','间隔范围 0-360 分钟',true);
+        body.interval_minutes = n;
+      }
+      await this.guard(async()=>{
+        this.musing = await this.api('/api/musing/targets/batch',{method:'POST',body});
+        const names = {on:'批量开启',off:'批量关闭',reset:'恢复默认',interval:'批量设置间隔'};
+        this.toast('OK', names[action] + '：' + body.scopes.length + ' 个档案');
+      });
+    },
+
+    /* ---- archive ---- */
+    async loadArchives(){
+      try { this.archives = (await this.api('/api/archives')).archives || []; } catch(e){}
+    },
+    async syncArchives(){
+      await this.guard(async()=>{
+        const r = await this.api('/api/archives/sync',{method:'POST'});
+        this.archives = r.archives || [];
+      }, '已同步到 data/archives.json');
+    },
+    downloadArchives(){ window.open('/api/archives/download','_blank'); },
+    selectAllArchives(flag){
+      if(flag){
+        const add = this.filteredArchives.map(a=>a.user_id).filter(x=>!this.archiveSel.includes(x));
+        this.archiveSel.push(...add);
+      } else {
+        this.archiveSel = [];
+      }
+    },
+    async copySelectedArchives(){
+      if(!this.archiveSel.length) return;
+      try {
+        await navigator.clipboard.writeText(this.archiveSel.map(x=>{
+          const a = this.archives.find(z=>z.user_id===x);
+          return a && a.qq ? a.qq : x;
+        }).join(','));
+        this.toast('OK','已复制 ' + this.archiveSel.length + ' 个 QQ/档案');
+      } catch(e){ this.toast('ERROR','剪贴板不可用',true); }
+    },
+    async batchClear(full){
+      if(!this.archiveSel.length) return;
+      const verb = full ? '删除档案（含人设）' : '清空记忆（保留人设）';
+      if(!confirm('确认对选中的 ' + this.archiveSel.length + ' 个档案执行「' + verb + '」？不可撤销。')) return;
+      const ids = [...this.archiveSel];
+      await this.guard(async()=>{
+        const url = full ? '/api/memory/delete/batch' : '/api/memory/clear/batch';
+        await this.api(url,{method:'POST',body:{user_ids:ids}});
+        this.archiveSel = [];
+        await this.loadArchives();
+        if(full) await this.loadMusing();
+      }, verb + '：' + ids.length + ' 个');
+    },
+    async deleteOneArchive(uid){
+      if(!confirm('确认删除档案 ' + uid + '（含人设，不可恢复）？')) return;
+      await this.guard(async()=>{
+        await this.api('/api/memory/delete/batch',{method:'POST',body:{user_ids:[uid]}});
+        this.archiveSel = this.archiveSel.filter(x=>x!==uid);
+        await this.loadArchives();
+        await this.loadMusing();
+      }, '已删除 ' + uid);
+    },
+    typeLabel(t){ return t==='private' ? '私聊' : (t==='group' ? '群聊' : (t==='member' ? '群友' : t)); },
+
+    /* ---- target ops ---- */
+    async loadTarget(){
+      if(!this.targetId.trim()) return this.toast('WARN','请先填写档案名',true);
+      await this.guard(async()=>{
+        this.profile = await this.api('/api/profile?user_id='+encodeURIComponent(this.targetId.trim()));
+        this.favorValue = this.profile.favorability ?? 0;
+        this.charText = this.profile.character_prompt || '';
+        this.personaText = this.profile.user_persona || '';
+        this.toast('LOADED', '档案 ' + this.targetId);
+      });
+    },
+    async setFavor(){
+      await this.guard(async()=>{
+        const r = await this.api('/api/favor',{method:'POST',body:{user_id:this.targetId.trim(),value:this.favorValue}});
+        this.profile.favorability = r.favorability;
+      }, '好感度已更新');
+    },
+    async saveChar(){
+      await this.guard(()=>this.api('/api/target/character',{method:'POST',body:{user_id:this.targetId.trim(),text:this.charText}}), '专属人格已保存');
+    },
+    async clearChar(){
+      await this.guard(()=>this.api('/api/target/character/clear',{method:'POST',body:{user_id:this.targetId.trim()}}), '专属人格已清除');
+      this.charText='';
+    },
+    async savePersona(){
+      await this.guard(()=>this.api('/api/target/persona',{method:'POST',body:{user_id:this.targetId.trim(),text:this.personaText}}), '用户档案已保存');
+    },
+    async clearPersona(){
+      await this.guard(()=>this.api('/api/target/persona/clear',{method:'POST',body:{user_id:this.targetId.trim()}}), '用户档案已清除');
+      this.personaText='';
+    },
+    async clearMemory(withGroup){
+      const uid = this.targetId.trim();
+      if(!uid) return this.toast('WARN','请先填写档案名',true);
+      const groupId = withGroup ? uid.replace(/^group_/,'').split('_')[0] : null;
+      if(!confirm(`确认清空 ${uid} 的记忆？此操作不可撤销。`)) return;
+      await this.guard(()=>this.api('/api/memory/clear',{method:'POST',body:{user_id:uid, group_id:groupId}}), '记忆已清空');
+      this.hot=[]; this.vectors=[];
+    },
+
+    /* ---- memory ---- */
+    async loadMemory(){
+      const s = this.scope.trim(); if(!s || this.busy.memory) return;
+      this.busy.memory = true;
+      try {
+        await this.guard(async()=>{
+          const r = await this.api('/api/memory/list?user_id='+encodeURIComponent(s));
+          this.hot = r.hot || []; this.vectors = r.vectors || [];
+          this.profile = await this.api('/api/profile?user_id='+encodeURIComponent(s));
+          if(!this.searchScopes) this.searchScopes = s;
+        });
+      } finally { this.busy.memory = false; }
+    },
+    async search(){
+      if(!this.searchQuery.trim() || this.busy.search) return;
+      const scopes = (this.searchScopes || this.scope).split(',').map(x=>x.trim()).filter(Boolean);
+      this.busy.search = true;
+      try {
+        await this.guard(async()=>{
+          this.results = (await this.api('/api/memory/search',{method:'POST',body:{query:this.searchQuery,scopes,top_k:6}})).results || [];
+        });
+      } finally { this.busy.search = false; }
+    },
+    async runEmbed(){
+      if(!this.embedText.trim() || this.busy.embed) return;
+      this.busy.embed = true;
+      try {
+        await this.guard(async()=>{ this.embedInfo = await this.api('/api/embed',{method:'POST',body:{text:this.embedText}}); });
+      } finally { this.busy.embed = false; }
+    },
+    openHotEdit(m){ this.editingHot = { ts:m.ts, role:m.role, content:m.content }; },
+    async saveHotEdit(){
+      await this.guard(async()=>{
+        await this.api('/api/memory/hot/edit',{method:'POST',body:{user_id:this.scope.trim(),ts:this.editingHot.ts,content:this.editingHot.content}});
+        this.editingHot=null; this.loadMemory();
+      },'已修改');
+    },
+    async delHot(m){
+      if(!confirm('确认删除这条消息？')) return;
+      await this.guard(async()=>{
+        await this.api('/api/memory/hot/delete',{method:'POST',body:{user_id:this.scope.trim(),ts:m.ts}});
+        this.loadMemory();
+      },'已删除');
+    },
+    openVecEdit(m){ this.editingVec = { id:m.id, type:m.type, content:m.content, importance:m.importance }; },
+    async saveVecEdit(){
+      await this.guard(async()=>{
+        await this.api('/api/memory/vector/edit',{method:'POST',body:{id:this.editingVec.id,content:this.editingVec.content,importance:this.editingVec.importance}});
+        this.editingVec=null; this.loadMemory();
+      },'已修改');
+    },
+    async delVec(m){
+      if(!confirm('确认删除这条记忆？不可撤销。')) return;
+      await this.guard(async()=>{
+        await this.api('/api/memory/vector/delete',{method:'POST',body:{id:m.id}});
+        this.loadMemory();
+      },'已删除');
+    },
+
+    /* ---- prompts ---- */
+    async loadPrompts(){ try { this.promptItems = (await this.api('/api/prompts')).items; } catch(e){} },
+    async togglePrompt(p){ await this.guard(async()=>{ this.promptItems=(await this.api('/api/prompts/toggle',{method:'POST',body:{file:p.file,enabled:!p.enabled}})).items; }, p.enabled?'已关闭 ':'已开启 '+p.file); },
+    async movePrompt(i, dir){
+      const arr=[...this.promptItems]; const j=i+dir; if(j<0||j>=arr.length) return;
+      [arr[i],arr[j]]=[arr[j],arr[i]];
+      await this.guard(async()=>{ this.promptItems=(await this.api('/api/prompts/reorder',{method:'POST',body:{files:arr.map(x=>x.file)}})).items; });
+    },
+    async setCharacterPrompt(p){
+      await this.guard(async()=>{ this.promptItems=(await this.api('/api/prompts/character',{method:'POST',body:{file:p.file}})).items; }, '默认人格：'+p.file);
+    },
+    async openEdit(p){
+      await this.guard(async()=>{
+        const r = await this.api('/api/prompts/content?file='+encodeURIComponent(p.file));
+        this.editing = { file:r.file, content:r.content };
+      });
+    },
+    async saveEdit(){
+      await this.guard(async()=>{
+        await this.api('/api/prompts/save',{method:'POST',body:{file:this.editing.file,content:this.editing.content}});
+        this.editing=null; this.loadPrompts();
+      }, '已保存，立即生效');
+    },
+    openCreate(){ this.creating={file:'',content:'',character:false,format:false,chat:false,internal:false}; },
+    async createPrompt(){
+      if(!this.creating.file.trim()) return this.toast('WARN','请填写文件名',true);
+      await this.guard(async()=>{
+        this.promptItems=(await this.api('/api/prompts/create',{method:'POST',body:this.creating})).items;
+        this.creating=null;
+      }, '文件已创建');
+    },
+    async deletePrompt(p){
+      if(!confirm('确认删除 '+p.file+' ？')) return;
+      await this.guard(async()=>{ this.promptItems=(await this.api('/api/prompts/delete',{method:'POST',body:{file:p.file}})).items; }, '已删除');
+    },
+
+    /* ---- model routing ---- */
+    async loadModels(){ try { this.models = await this.api('/api/models'); } catch(e){} },
+    async setRoute(role, pid){
+      if(!pid) return;
+      await this.guard(async()=>{
+        this.models = await this.api('/api/models/route',{method:'POST',body:{role,profile:pid}});
+      }, role==='main' ? '主模型已切换' : '分模型已切换');
+    },
+    resetProfileForm(){ this.profileForm = { id:null, name:'', url:'', key:'', model:'' }; },
+    editProfile(p){
+      this.profileForm = { id:p.id, name:p.name, url:p.url, key:'', model:p.model };
+    },
+    async saveProfile(){
+      const f = this.profileForm;
+      if(!f.url.trim()) return this.toast('WARN','请填写端点 URL',true);
+      if(!f.model.trim()) return this.toast('WARN','请填写模型名',true);
+      if(!f.id && !f.key.trim()) return this.toast('WARN','新建端点必须填写 API KEY',true);
+      await this.guard(async()=>{
+        this.models = await this.api('/api/models/profile',{method:'POST',body:f});
+        this.resetProfileForm();
+      }, f.id ? '端点已更新' : '端点已添加');
+    },
+    async deleteProfile(p){
+      if(!confirm('确认删除端点 ' + p.name + ' ？')) return;
+      await this.guard(async()=>{
+        this.models = await this.api('/api/models/profile/delete',{method:'POST',body:{id:p.id}});
+        if(this.profileForm.id===p.id) this.resetProfileForm();
+      }, '已删除 ' + p.name);
+    },
+
+    /* ---- logs ---- */
+    logClass(line){
+      if(/\[错误\]|Traceback|Exception|失败/.test(line)) return 'error';
+      if(/\[判断\]/.test(line)) return 'judge';
+      if(/\[RAG\]/.test(line)) return 'rag';
+      if(/\[向量\]/.test(line)) return 'vector';
+      if(/\[记忆\]/.test(line)) return 'memory';
+      if(/\[回复\]/.test(line)) return 'reply';
+      if(/\[频率\]|\[冷却\]/.test(line)) return 'freq';
+      if(/\[胡思乱想\]|发散/.test(line)) return 'musing';
+      if(/\[掷骰\]|\[指令\]|\[设置\]/.test(line)) return 'do';
+      return '';
+    },
+    toggleFilter(k){
+      const i=this.logFilterSet.indexOf(k);
+      if(i>=0) this.logFilterSet.splice(i,1); else this.logFilterSet.push(k);
+    },
+    addLogs(lines){
+      const clean = lines.filter(l=>l && l.trim());
+      if(!clean.length) return;
+      this.logs.push(...clean);
+      if(this.logs.length>2000) this.logs.splice(0, this.logs.length-2000);
+    },
+    scrollBottom(){
+      this.$nextTick(()=>{ const el=this.$refs.logbox; if(el) el.scrollTop=el.scrollHeight; });
+    },
+    connectWS(){
+      const proto = location.protocol==='https:'?'wss':'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws/logs`);
+      ws.onopen = ()=>{ this.wsOpen=true; };
+      ws.onclose = ()=>{ this.wsOpen=false; setTimeout(()=>this.connectWS(), 3000); };
+      ws.onerror = ()=>{ try{ws.close();}catch(e){} };
+      ws.onmessage = (ev)=>{
+        if(this.paused) return;
+        const msg = JSON.parse(ev.data);
+        if(msg.type==='init'){ this.logs = []; this.addLogs(msg.lines); if(this.autoscroll) this.scrollBottom(); }
+        else if(msg.type==='append'){ this.addLogs(msg.lines); }
+      };
+    },
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+# 个人配置与密钥
+api.json
+bot_settings.json
+prompts_config.json
+.env
+*.key
+*token*
+
+# 运行数据与日志
+data/
+user_log/
+models/
+ntqq/
+QQ-BOT.log*
+*.log
+memes_all.json
+
+# 备份与本地环境
+备份/
+backups/
+.venv/
+venv/
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pip-cache/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+*.lnk
