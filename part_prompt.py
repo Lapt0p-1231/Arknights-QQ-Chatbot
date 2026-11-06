@@ -15,7 +15,6 @@ CONFIG_FILE = os.environ.get(
 
 # 默认配置：白金人设作为可选模板，默认关闭，可在 WebUI 中启用
 DEFAULT_FILES = [
-    {"file": "01_前置破甲.txt", "enabled": True},
     {"file": "02_角色人设（白金）.txt", "enabled": False, "character": True},
     {"file": "03_符号格式.txt", "enabled": True, "format": True},
     {"file": "04_字数要求.txt", "enabled": True, "format": True},

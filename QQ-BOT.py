@@ -7,7 +7,6 @@ import time
 from collections import deque
 import websockets
 import aiohttp
-import part_meme
 import part_record
 import part_command
 import part_prompt
@@ -101,8 +100,7 @@ def strip_trailing_period(text):
 
 
 def clean_reply_format(text):
-    """剥掉前置破甲提示词遗留的输出壳：<!--?--> 标记和 <output> 标签。
-    不同模型对这些越狱指令的遵守程度不同（DeepSeek 自觉省略，Gemini 原样输出）。"""
+    """清理部分模型可能输出的 <!--?--> 标记和 <output> 标签。"""
     if not isinstance(text, str):
         return text
     text = re.sub(r"<!--\?-->", "", text)

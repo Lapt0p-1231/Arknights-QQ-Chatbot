@@ -13,7 +13,6 @@ models/
 ntqq/
 QQ-BOT.log*
 *.log
-memes_all.json
 
 # 备份与本地环境
 备份/

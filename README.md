@@ -1,4 +1,6 @@
-# ARK-BOT
+# 在QQ上的《明日方舟》角色聊天机器人
+
+当前版本：v1.0.2
 
 基于 NapCat + OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory）、语义召回、角色扮演、群聊插话和本地 WebUI。
 
@@ -28,9 +30,11 @@
 
 ## 安装
 
+第一次部署请先阅读根目录的 **`环境配置教程.txt`**，其中包含 Python、NapCat、模型接口、机器人身份和启动检查的完整步骤。
+
 ```powershell
-git clone https://github.com/Lapt0p-1231/ARK-BOT.git
-cd ARK-BOT
+git clone https://github.com/Lapt0p-1231/Arknights-QQ-Chatbot.git
+cd Arknights-QQ-Chatbot
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
@@ -116,7 +120,6 @@ WebUI 默认没有登录认证，请不要将监听地址改为公网地址。
 | 指令 | 功能 |
 |---|---|
 | `/cmd help` | 按当前权限与场景查看指令 |
-| `/烂梗` | 随机发送一条内置烂梗 |
 | `/rl` | 重新生成上一条回复 |
 | `/char set <角色设定>` | 私聊设置专属人格 |
 | `/char clear` | 清除专属人格 |
@@ -142,22 +145,20 @@ WebUI 默认没有登录认证，请不要将监听地址改为公网地址。
 
 这些内容均已加入 `.gitignore`。公开分享或提交代码前，请勿强行添加这些文件。
 
-如需扩展 `/烂梗` 语料，可在根目录自行放置 `memes_all.json`；未放置时使用代码内置的少量示例，不影响其他功能。
-
 ## 项目结构
 
 ```text
-ARK-BOT/
+Arknights-QQ-Chatbot/
 ├── QQ-BOT.py             # 消息处理、模型调用与机器人主循环
 ├── part_record.py        # 冷热记忆、向量召回与档案存储
 ├── part_command.py       # 消息发送与指令处理
 ├── part_prompt.py        # 提示词加载与开关管理
 ├── part_api.py           # OpenAI 兼容端点与模型路由
-├── part_meme.py          # 烂梗指令
 ├── part_web.py           # FastAPI WebUI 后端
 ├── prompts/              # 通用提示词与可选白金人设
 ├── webui/index.html      # WebUI 前端
 ├── api.example.json      # 模型配置模板
+├── 环境配置教程.txt       # 首次部署的完整环境配置步骤
 └── requirements.txt
 ```
 

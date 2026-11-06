@@ -1,6 +1,5 @@
 import json
 import re
-import part_meme
 import part_record
 
 
@@ -8,7 +7,6 @@ import part_record
 # WebUI 指令速查展示用（完整版）
 CMD_HELP_TEXT = (
     "[指令列表]\n"
-    "/烂梗 - 随机发送一条烂梗\n"
     "/rl - 重新生成上一条回复\n"
     "/char set <角色设定> - 设置专属人格 [仅私聊]\n"
     "/char clear - 清除专属人格 [仅私聊]\n"
@@ -32,7 +30,6 @@ def build_help(admin=False, in_group=False):
     """按权限和场景生成指令列表：普通用户只看到自己能用的。"""
     lines = [
         "[指令列表]",
-        "/烂梗 - 随机发送一条烂梗",
         "/rl - 重新生成上一条回复",
         "/user set <用户信息> - 记录你的信息",
         "/user clear - 清除你的信息",
@@ -171,12 +168,6 @@ def _parse_proset(text):
 # on_rl: /rl 触发的重新生成回调
 async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
     text = msg_text.strip()
-
-    # 烂梗
-    if text == "/烂梗":
-        reply = await part_meme.fetch_random_meme()
-        await send_private(websocket, user_id, reply)
-        return True
 
     # /memory reset
     if text == "/memory reset":
@@ -320,12 +311,6 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
 async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on_rl):
     text = msg_text.strip()
     mem_key = f"group_{group_id}_{user_id}"
-
-    # 烂梗
-    if text == "/烂梗":
-        reply = await part_meme.fetch_random_meme()
-        await send_group(websocket, group_id, reply)
-        return True
 
     # /rl
     if text == "/rl":

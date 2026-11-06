@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ARK-BOT // OPERATIONS TERMINAL</title>
+<title>明日方舟QQ角色聊天机器人 // OPERATIONS TERMINAL</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
@@ -301,14 +301,14 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.10 // v0.2</div>
+      <div>BUILD 2026.11 // v1.0.2</div>
     </div>
   </aside>
 
   <!-- ============ MAIN ============ -->
   <main class="main">
     <div class="topbar">
-      <div class="crumb">ARK-BOT / <b>{{ currentTab.en }}</b></div>
+      <div class="crumb">明日方舟QQ角色聊天机器人 / <b>{{ currentTab.en }}</b></div>
       <div class="grow"></div>
       <span class="chip yellow">TARGET <b>{{ status.bot_qq }}</b></span>
       <span class="chip">MUSING <b>{{ musing.config.interval_minutes }}m</b></span>
