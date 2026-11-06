@@ -1,8 +1,10 @@
 # ARK-BOT
 
-基于 NapCat + OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆、语义召回、角色扮演、群聊插话和本地 WebUI。
+基于 NapCat + OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory）、语义召回、角色扮演、群聊插话和本地 WebUI。
 
-这是可直接部署的标准版本：不包含个人 API Key、QQ 账号、聊天记录、向量数据、模型缓存、备份或本机 Docker 环境。
+# 能让你的干员和你QQ聊天！！
+
+该版本不包含个人 API Key、QQ 账号、聊天记录、向量数据、模型缓存、备份或本机 Docker 环境。
 
 ## 功能
 
