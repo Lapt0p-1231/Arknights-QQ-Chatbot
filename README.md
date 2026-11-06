@@ -1,6 +1,6 @@
 # 在QQ上的《明日方舟》角色聊天机器人
 
-当前版本：v1.0.2
+当前版本：v1.0.3 · [更新日志](CHANGELOG.md)
 
 基于 SnowLuma（Docker）+ OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory ）、语义召回、角色扮演、群聊插话和本地 WebUI。
 
@@ -162,6 +162,7 @@ Arknights-QQ-Chatbot/
 ├── webui/index.html      # WebUI 前端
 ├── api.example.json      # 模型配置模板
 ├── 环境配置教程.txt       # 首次部署的完整环境配置步骤
+├── CHANGELOG.md          # 版本更新日志
 └── requirements.txt
 ```
 

@@ -225,7 +225,7 @@ def load_internal_prompt(filename):
 # 实时提示词
 def build_user_prompt(user_id, memory, query=None, recall_scopes=None):
     # 专属人格
-    user_character = memory.get("character_prompt", "").strip()
+    user_character = (memory.get("character_prompt") or "").strip()
 
     # 人格拟合度
     fitness = memory.get("fitness")
@@ -266,7 +266,7 @@ def build_user_prompt(user_id, memory, query=None, recall_scopes=None):
         print(f"[模式] 用户 {user_id} 使用聊天模式")
 
     # 用户人设
-    user_persona = memory.get("user_persona", "").strip()
+    user_persona = (memory.get("user_persona") or "").strip()
     if user_persona:
         active_prompt += (
             "\n\n# 关于正在和你对话的这位用户\n"

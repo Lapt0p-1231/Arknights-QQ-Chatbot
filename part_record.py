@@ -812,7 +812,9 @@ def load_user_memory(user_id, hot_limit=None):
     try:
         row = conn.execute("SELECT data FROM user_profile WHERE user_id=?", (user_id,)).fetchone()
         if row:
-            data = json.loads(row[0])
+            # 合并默认键：touch 建档的轻量档案只有 display_name，缺键会在后续 .strip() 处炸掉
+            data = {**_DEFAULT_PROFILE, **json.loads(row[0])}
+            data.setdefault("user_id", user_id)
         else:
             data = dict(_DEFAULT_PROFILE)
             data["user_id"] = user_id
