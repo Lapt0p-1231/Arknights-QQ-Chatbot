@@ -2,7 +2,7 @@
 
 当前版本：v1.0.2
 
-基于 NapCat + OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory）、语义召回、角色扮演、群聊插话和本地 WebUI。
+基于 SnowLuma（Docker）+ OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory）、语义召回、角色扮演、群聊插话和本地 WebUI。
 
 # 能让你的干员和你QQ聊天！！
 
@@ -23,14 +23,14 @@
 - Windows 10/11（其他系统可使用 Python 命令手动启动）
 - Python 3.11+
 - 一个 QQ 机器人账号
-- NapCatQQ：https://github.com/NapNeko/NapCatQQ
+- Docker Desktop 与 SnowLuma 协议端容器（镜像：`motricseven7/snowluma:latest`）
 - 一个 OpenAI 兼容的聊天模型接口，例如 DeepSeek
 
 嵌入模型使用 `bge-small-zh`，首次运行会自动下载约 100MB 模型，之后可离线进行向量检索。无需 GPU。
 
 ## 安装
 
-第一次部署请先阅读根目录的 **`环境配置教程.txt`**，其中包含 Python、NapCat、模型接口、机器人身份和启动检查的完整步骤。
+第一次部署请先阅读根目录的 **`环境配置教程.txt`**，其中包含 Python、Docker Desktop、SnowLuma、模型接口、机器人身份和启动检查的完整步骤。
 
 ```powershell
 git clone https://github.com/Lapt0p-1231/Arknights-QQ-Chatbot.git
@@ -82,18 +82,19 @@ $env:QQ_BOT_ADMIN_QQ = "123456789,987654321"
 | `QQ_BOT_WEB_HOST` | WebUI 监听地址 | `127.0.0.1` |
 | `QQ_BOT_WEB_PORT` | WebUI 端口 | `8090` |
 
-## 配置 NapCat
+## 配置 SnowLuma
 
-1. 安装并启动 NapCat，登录机器人 QQ。
-2. 在 NapCat 网络配置中添加“反向 WebSocket 客户端”。
-3. 地址填写：`ws://127.0.0.1:8080`。
-4. 保存并启用连接。
+1. 安装并启动 Docker Desktop。
+2. 按 `环境配置教程.txt` 创建并启动 `snowluma` 容器。
+3. 打开 SnowLuma 控制台：http://127.0.0.1:5099，登录机器人 QQ。
+4. 在 SnowLuma 网络配置中添加“反向 WebSocket 客户端”，地址填写 `ws://127.0.0.1:8080`。
+5. 保存并启用连接。
 
-`QQ-BOT.py` 会在本机 `8080` 端口启动 WebSocket 服务，等待 NapCat 接入。请保持该端口未被其他程序占用，不要将其直接暴露到公网。
+`QQ-BOT.py` 会在本机 `8080` 端口启动 WebSocket 服务，等待 SnowLuma 接入。请保持该端口未被其他程序占用，不要将其直接暴露到公网。
 
 ## 启动
 
-确保 NapCat 已运行，然后双击 `一键启动.bat`，或分别执行：
+确保 Docker Desktop 与 SnowLuma 已运行，然后双击 `一键启动.bat`，或分别执行：
 
 ```powershell
 .\.venv\Scripts\python.exe part_web.py

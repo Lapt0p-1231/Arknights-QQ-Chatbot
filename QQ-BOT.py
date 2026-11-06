@@ -462,7 +462,7 @@ def _segments_to_text(message):
 
 
 async def resolve_quoted_text(websocket, scope, message_id):
-    """引用回复的原文：先查本地历史，查不到再向 NapCat 要 get_msg。"""
+    """引用回复的原文：先查本地历史，查不到再向协议端请求 get_msg。"""
     if not message_id:
         return ""
     text = await asyncio.to_thread(part_record.get_message_content, scope, message_id)

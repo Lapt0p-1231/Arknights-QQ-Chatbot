@@ -10,8 +10,10 @@
    下载地址：https://www.python.org/downloads/
    安装时务必勾选“Add python.exe to PATH”。
 3. 一个用于机器人的 QQ 账号，建议使用单独的小号。
-4. NapCatQQ，用来让 Python 程序接收和发送 QQ 消息。
-   项目地址：https://github.com/NapNeko/NapCatQQ
+4. Docker Desktop 和 SnowLuma 协议端容器，用来让 Python 程序接收和发送 QQ 消息。
+   Docker Desktop：https://www.docker.com/products/docker-desktop/
+   SnowLuma 镜像：motricseven7/snowluma:latest
+   请使用单独的机器人 QQ 账号；任何协议端都无法保证账号不会被平台风控。
 5. 一个 OpenAI 兼容聊天接口的 API Key，例如 DeepSeek。
 6. 首次运行需要联网下载 Python 依赖和约 100MB 的中文嵌入模型。
    嵌入模型下载完成后，本地记忆检索不需要 GPU。
@@ -115,22 +117,42 @@ api.json 含有私密密钥，不要把它发给他人或上传到公开仓库�
 不设置该变量就不会发送微信告警，不影响聊天功能。
 
 ==================================================
-六、安装并配置 NapCat
+六、安装并配置 Docker Desktop 与 SnowLuma
 ==================================================
 
-1. 按 NapCat 官方说明完成安装并启动。
-2. 使用机器人 QQ 登录 NapCat。
-3. 打开 NapCat 的网络配置。
-4. 新建“反向 WebSocket 客户端”。
-5. 地址填写：
+1. 安装 Docker Desktop，安装过程中按提示启用 WSL2。
+   安装完成后启动 Docker Desktop，等到界面显示引擎已正常运行。
+
+2. 在 PowerShell 检查 Docker：
+
+   docker version
+
+   如果提示无法连接 Docker 引擎，请先等待 Docker Desktop 完全启动。
+
+3. 创建并启动 SnowLuma 容器。将下面整段命令复制到 PowerShell 执行：
+
+   docker run -d --name snowluma --restart unless-stopped -p 5099:5099 -p 6081:6081 -p 3010:3000 -p 3011:3001 -v qq-client-config:/app/.config -v qq-gateway-data:/app/data -v qq-client-data:/app/.local/share motricseven7/snowluma:latest
+
+   第一次执行需要拉取镜像，请保持网络可用。
+   这条命令会创建三个 Docker 数据卷，用于保存 QQ 登录数据与 SnowLuma 配置。
+   以后重启电脑只需启动 Docker Desktop，再执行：docker start snowluma
+
+4. 打开 SnowLuma 控制台：
+
+   http://127.0.0.1:5099
+
+5. 按控制台提示登录机器人 QQ。
+6. 在 SnowLuma 的网络配置中新建“反向 WebSocket 客户端”。
+7. 地址填写：
 
    ws://127.0.0.1:8080
 
-6. 保存并启用该连接。
+8. 保存并启用该连接。
 
-注意连接方向：QQ-BOT.py 在 8080 端口启动服务，NapCat 主动连接它。
-如果连接失败，先启动 QQ-BOT.py，再在 NapCat 中重连。
-建议 NapCat 和机器人程序运行在同一台电脑上，不要把 8080 端口暴露到公网。
+注意连接方向：QQ-BOT.py 在 8080 端口启动服务，SnowLuma 主动连接它。
+如果连接失败，先启动 QQ-BOT.py，再在 SnowLuma 控制台中重连。
+建议 SnowLuma 和机器人程序运行在同一台电脑上，不要把 8080 端口暴露到公网。
+SnowLuma 控制台和 QQ 登录数据也不要开放到公网；请使用独立机器人账号并注意账号安全。
 
 ==================================================
 七、启动程序
@@ -138,11 +160,12 @@ api.json 含有私密密钥，不要把它发给他人或上传到公开仓库�
 
 启动顺序：
 
-1. 启动 NapCat 并登录机器人 QQ。
-2. 双击项目中的“一键启动.bat”。
-3. 脚本会启动 WebUI 和 QQ-BOT.py。
-4. 浏览器打开 http://127.0.0.1:8090 可进入管理页面。
-5. 回到 NapCat 检查反向 WebSocket 是否显示已连接。
+1. 启动 Docker Desktop，等待引擎正常运行。
+2. 执行 docker start snowluma，并在控制台登录机器人 QQ。
+3. 双击项目中的“一键启动.bat”。
+4. 脚本会尝试启动已有 snowluma 容器，然后启动 WebUI 和 QQ-BOT.py。
+5. 浏览器打开 http://127.0.0.1:8090 可进入机器人管理页面。
+6. 打开 http://127.0.0.1:5099，检查反向 WebSocket 是否显示已连接。
 
 也可以手动启动：
 
@@ -193,7 +216,7 @@ WebUI 默认仅监听 127.0.0.1，且没有登录认证。
 
 1. 机器人完全不理我
    - 确认 QQ_BOT_QQ 是机器人自己的 QQ，不是你的 QQ。
-   - 确认 NapCat 反向 WebSocket 已连接 ws://127.0.0.1:8080。
+   - 确认 SnowLuma 反向 WebSocket 已连接 ws://127.0.0.1:8080。
    - 默认群聊主要响应 @机器人，可先尝试 @机器人 发言。
    - 查看 QQ-BOT.py 窗口和 QQ-BOT.log 中的报错。
 
@@ -205,7 +228,8 @@ WebUI 默认仅监听 127.0.0.1，且没有登录认证。
    - 检查 model 名称和 url 是否与服务商文档一致。
    - 不要把其他服务商的模型名直接用于 DeepSeek 官方地址。
 
-4. NapCat 一直连不上
+4. SnowLuma 一直连不上
+   - 确认 Docker Desktop 已正常运行，并执行 docker ps 检查 snowluma 容器。
    - 确认已先运行 QQ-BOT.py。
    - 检查是否选成“反向 WebSocket 客户端”，地址是否为 8080。
    - 检查 8080 是否被其他程序占用：
