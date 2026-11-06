@@ -2,7 +2,7 @@
 
 当前版本：v1.0.2
 
-基于 SnowLuma（Docker）+ OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory）、语义召回、角色扮演、群聊插话和本地 WebUI。
+基于 SnowLuma（Docker）+ OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory ）、语义召回、角色扮演、群聊插话和本地 WebUI。
 
 # 能让你的干员和你QQ聊天！！
 
@@ -113,6 +113,8 @@ WebUI 默认没有登录认证，请不要将监听地址改为公网地址。
 ## 人设与提示词
 
 `prompts/` 中保留了一套通用提示词和一个白金角色模板。白金人设默认关闭，可在 WebUI 的提示词管理中启用，也可以直接修改或新增 `.txt` 提示词文件。
+
+## ！欣特莱雅世界第一 ！
 
 提示词开关会保存到本地 `prompts_config.json`，该文件属于个人配置，不纳入标准仓库。
 
