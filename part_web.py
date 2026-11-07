@@ -7,7 +7,10 @@ import asyncio
 import base64
 import json
 import os
+import socket
 import struct
+import subprocess
+import sys
 import time
 import zlib
 
@@ -45,7 +48,13 @@ class SettingsUpdate(BaseModel):
     vision_admin_only: bool | None = None
     vision_probability: float | None = None
     vision_meme_probability: float | None = None
+    search_enabled: bool | None = None
+    search_cooldown: float | None = None
+    tavily_api_key: str | None = None
+    search_explicit_cmd_enabled: bool | None = None
     quote_threshold: int | None = None
+    reply_delay_min: float | None = None
+    reply_delay_max: float | None = None
 
 
 class MusingConfig(BaseModel):
@@ -173,6 +182,7 @@ class ProfileDelete(BaseModel):
 
 class ProfileTest(BaseModel):
     id: str
+    type: str = "all"
 
 
 # ====== 工具 ======
@@ -237,6 +247,99 @@ def status():
     }
 
 
+# ====== 机器人进程控制（关机/重启）======
+BOT_PID_FILE = os.path.join(BASE_DIR, "data", "bot.pid")
+BOT_SCRIPT = os.path.join(BASE_DIR, "QQ-BOT.py")
+
+
+def _read_bot_pid():
+    try:
+        with open(BOT_PID_FILE, "r", encoding="utf-8") as f:
+            pid = int(f.read().strip())
+        return pid if pid > 0 else None
+    except Exception:
+        return None
+
+
+def _pid_alive(pid):
+    """用 tasklist 校验 PID 存活且确实是 python 进程，避免 PID 复用误判。"""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=0x08000000,
+        ).stdout or ""
+        if f'"{pid}"' not in out:
+            return False
+        low = out.lower()
+        return "python" in low
+    except Exception:
+        return False
+
+
+def _kill_bot():
+    pid = _read_bot_pid()
+    killed = False
+    if pid and _pid_alive(pid):
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True, timeout=15,
+            creationflags=0x08000000,
+        )
+        killed = True
+    try:
+        os.remove(BOT_PID_FILE)
+    except OSError:
+        pass
+    return killed, pid
+
+
+def _spawn_bot():
+    # DETACHED_PROCESS：无控制台窗口，且 webui 退出/重启后机器人继续运行
+    proc = subprocess.Popen(
+        [sys.executable, os.path.basename(BOT_SCRIPT)],
+        cwd=BASE_DIR,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=0x00000008 | 0x00000200,
+        close_fds=True,
+    )
+    return proc
+
+
+@app.get("/api/bot/status")
+def bot_status():
+    pid = _read_bot_pid()
+    alive = bool(pid and _pid_alive(pid))
+    return {"running": alive, "pid": pid if alive else None}
+
+
+@app.post("/api/bot/shutdown")
+def bot_shutdown():
+    killed, pid = _kill_bot()
+    return {"ok": True, "killed": killed, "pid": pid}
+
+
+@app.post("/api/bot/restart")
+def bot_restart():
+    _kill_bot()
+    time.sleep(0.8)
+    _spawn_bot()
+    start = time.time()
+    # 等 PID 文件出现且 8080 端口真正在监听，避免误报启动成功
+    while time.time() - start < 20:
+        time.sleep(0.5)
+        pid = _read_bot_pid()
+        if pid and _pid_alive(pid):
+            try:
+                with socket.create_connection(("127.0.0.1", 8080), timeout=0.5):
+                    return {"ok": True, "pid": pid}
+            except OSError:
+                continue
+    raise HTTPException(500, "机器人启动超时，请查看日志")
+
+
 @app.get("/api/settings")
 def get_settings():
     return part_record.load_settings()
@@ -289,11 +392,28 @@ def update_settings(body: SettingsUpdate):
         if not 0 <= value <= 100:
             raise HTTPException(400, "表情包识别概率范围 0-100")
         cur["vision_meme_probability"] = value
+    if "search_enabled" in data:
+        cur["search_enabled"] = bool(data["search_enabled"])
+    if "search_cooldown" in data:
+        value = float(data["search_cooldown"])
+        if not 0 <= value <= 86400:
+            raise HTTPException(400, "搜索冷却范围 0-86400 秒")
+        cur["search_cooldown"] = value
+    if "tavily_api_key" in data:
+        cur["tavily_api_key"] = str(data["tavily_api_key"]).strip()
+    if "search_explicit_cmd_enabled" in data:
+        cur["search_explicit_cmd_enabled"] = bool(data["search_explicit_cmd_enabled"])
     if "quote_threshold" in data:
         value = int(data["quote_threshold"])
         if not 0 <= value <= 200:
             raise HTTPException(400, "引用阈值范围 0-200 条")
         cur["quote_threshold"] = value
+    for key in ("reply_delay_min", "reply_delay_max"):
+        if key in data:
+            value = float(data[key])
+            if not 0 <= value <= 60:
+                raise HTTPException(400, "回复延迟范围 0-60 秒")
+            cur[key] = value
     if "dive_probability" in data:
         value = float(data["dive_probability"])
         if not 0 <= value <= 100:
@@ -776,7 +896,7 @@ def _test_image_uri():
 
 @app.post("/api/models/test")
 async def model_profile_test(body: ProfileTest):
-    """连通性 + 文本延迟 + 视觉能力三段测试，结果只读不写配置。"""
+    """连通性 / 文本延迟 / 视觉能力测试，结果只读不写配置。"""
     profile = part_api.get_profile(body.id)
     if not profile:
         raise HTTPException(404, "没有这个端点")
@@ -815,11 +935,13 @@ async def model_profile_test(body: ProfileTest):
             return {"ok": False, "latency_ms": round((time.monotonic() - start) * 1000),
                     "error": str(e)[:200]}
 
-    text_result = await _probe([{"role": "user", "content": "ping，只回复 pong"}], 45)
-    if text_result["ok"] and not text_result.get("reply"):
-        text_result["note"] = "端点响应正常但内容为空（可能为推理模型，token 耗尽于思考）"
-    result = {"text": text_result, "vision": None}
-    if text_result["ok"]:
+    async def _probe_text():
+        text_result = await _probe([{"role": "user", "content": "ping，只回复 pong"}], 45)
+        if text_result["ok"] and not text_result.get("reply"):
+            text_result["note"] = "端点响应正常但内容为空（可能为推理模型，token 耗尽于思考）"
+        return text_result
+
+    async def _probe_vision():
         vision = await _probe([{"role": "user", "content": [
             {"type": "text", "text": "这张图片是什么颜色？只回答颜色名称"},
             {"type": "image_url", "image_url": {"url": _test_image_uri()}},
@@ -837,8 +959,19 @@ async def model_profile_test(body: ProfileTest):
                     vision["note"] = "端点接受了图片但描述与测试图不符，视觉能力存疑"
         else:
             vision["supported"] = False
-        result["vision"] = vision
-    return result
+        return vision
+
+    test_type = getattr(body, "type", "all") or "all"
+    if test_type in ("text", "conn"):
+        return {"text": await _probe_text(), "vision": None}
+    elif test_type == "vision":
+        return {"text": None, "vision": await _probe_vision()}
+    else:
+        text_result = await _probe_text()
+        vision_result = None
+        if text_result["ok"]:
+            vision_result = await _probe_vision()
+        return {"text": text_result, "vision": vision_result}
 
 
 # ====== 日志 ======
@@ -869,8 +1002,17 @@ async def ws_logs(websocket: WebSocket):
                 lines = lines[1:]
             await websocket.send_json({"type": "init", "lines": lines[-400:]})
 
+        last_ping = time.time()
         while True:
             await asyncio.sleep(0.4)
+            # 心跳：日志长时间无新增时也持续发帧，客户端据此判断连接是否半开
+            now = time.time()
+            if now - last_ping >= 10:
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    return
+                last_ping = now
             if not os.path.isfile(LOG_FILE):
                 continue
             size = os.path.getsize(LOG_FILE)

@@ -85,6 +85,8 @@ body::after{
 }
 .chip b{color:var(--text);font-weight:500}
 .chip.yellow{border-color:rgba(62,198,255,.4);color:var(--accent)}
+.chip.ok{border-color:rgba(154,230,180,.4);color:var(--green)}
+.chip.ok b{color:var(--green)}
 .clock{font-family:var(--en);font-size:15px;letter-spacing:2px;color:var(--dim)}
 
 .content{padding:26px 28px 60px;max-width:1360px;width:100%;margin:0 auto}
@@ -203,12 +205,17 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .logline{white-space:pre-wrap;word-break:break-all;border-left:2px solid transparent;padding-left:10px;color:#c9d4e0}
 .logline:hover{background:#10161f}
 .logline .ts{color:#4a5a6c;margin-right:8px}
-.logline.judge{border-left-color:#3d6f78;color:#c3cedb}
+.logline.judge{border-left-color:#2f8f83;color:#86e3d3}
+.logline.reply{border-left-color:#3da35f;color:#8df0a2}
+.logline.chat{border-left-color:#4a5a6c;color:#93a8bd}
+.logline.sys{border-left-color:#333c46;color:#66758a}
+.logline.quote{border-left-color:#7a5c9e;color:#cfaef0}
+.logline.vision{border-left-color:#9e5c7a;color:#f0aecb}
+.logline.search{border-left-color:#a8842c;color:#ffd166}
 .logline.rag{border-left-color:#4a5f8f;color:#aabce6}
 .logline.freq{border-left-color:#7a6a2a;color:#d8c47a}
 .logline.vector{border-left-color:#5c4a72;color:#c7b3dd}
-.logline.memory{border-left-color:#4f6b4f;color:#b7d3b7}
-.logline.reply{border-left-color:#6b6b6b;color:#dbe4ee}
+.logline.memory{border-left-color:#4f6b4f;color:#a9c8a9}
 .logline.error{border-left-color:var(--red);color:#ff8a80;background:rgba(255,59,48,.04)}
 .logline.musing{border-left-color:#8f6b3a;color:#e0c194}
 .logline.do{border-left-color:var(--accent);color:#b3e4ff}
@@ -301,7 +308,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.0.6</div>
+      <div>BUILD 2026.11 // v1.1.0</div>
     </div>
   </aside>
 
@@ -314,6 +321,9 @@ input[type=range]{accent-color:var(--accent);width:100%}
       <span class="chip">MUSING <b>{{ musing.config.interval_minutes }}m</b></span>
       <span class="chip">PROMPTS <b>{{ status.enabled_prompt_count }}/{{ status.prompt_count }}</b></span>
       <span class="chip">DB <b>{{ fmtSize(status.db_size) }}</b></span>
+      <span class="chip" :class="{ok:botRunning}">BOT <b>{{ botRunning ? 'RUNNING' + (botPid ? ' #' + botPid : '') : 'STOPPED' }}</b></span>
+      <button class="btn sm danger" :disabled="!botRunning" @click="botAction('shutdown')">关机</button>
+      <button class="btn sm primary" @click="botAction('restart')">重启</button>
       <span class="clock">{{ clock }}</span>
     </div>
 
@@ -376,12 +386,54 @@ input[type=range]{accent-color:var(--accent);width:100%}
                 </div>
                 <button class="btn" style="margin-top:17px" @click="saveSettings({reply_cooldown:settings.reply_cooldown,reply_cooldown_at:settings.reply_cooldown_at})">应用</button>
               </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="grow">
+                  <div class="label" style="margin-bottom:5px">Delay Min / 最小延迟 (s)</div>
+                  <input type="number" min="0" max="60" step="0.5" v-model.number="settings.reply_delay_min">
+                </div>
+                <div class="grow">
+                  <div class="label" style="margin-bottom:5px">Delay Max / 最大延迟 (s)</div>
+                  <input type="number" min="0" max="60" step="0.5" v-model.number="settings.reply_delay_max">
+                </div>
+                <button class="btn" style="margin-top:17px" @click="saveSettings({reply_delay_min:settings.reply_delay_min,reply_delay_max:settings.reply_delay_max})">应用</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- search -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">02</span><span class="tt">Search</span><span class="desc">联网搜索</span></div>
+            <div class="panel-b">
+              <div class="row between">
+                <div><div class="label">Web Search</div><div class="hint">联网搜索总开关</div></div>
+                <div class="switch" :class="{on:settings.search_enabled}" @click="saveSettings({search_enabled:!settings.search_enabled})"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Explicit Command</div><div class="hint">显式搜索指令（"搜一下/帮我查"等；关闭后仅 AI 判回提取搜索词）</div></div>
+                <div class="switch" :class="{on:settings.search_explicit_cmd_enabled}" @click="saveSettings({search_explicit_cmd_enabled:!settings.search_explicit_cmd_enabled})"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Search Cooldown</div><div class="hint">搜索冷却（秒，按群/私聊独立计）</div></div>
+                <input type="number" min="0" max="86400" step="10" v-model.number="settings.search_cooldown" style="width:90px" @change="saveSettings({search_cooldown:settings.search_cooldown})">
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Tavily API Key</div><div class="hint">LLM 搜索源（tavily.com 注册免费 1000 次/月；留空走 Jina/必应免 Key 链）</div></div>
+                <input type="text" v-model="settings.tavily_api_key" placeholder="tvly-...（留空禁用）" style="width:240px" @change="saveSettings({tavily_api_key:settings.tavily_api_key})">
+              </div>
+              <div class="divider"></div>
+              <div class="hint" style="line-height:1.6">
+                <b>检索链路</b>：Tavily（配置 Key 时优先）→ Jina s.jina.ai（LLM 友好正文）→ cn.bing.com（兜底）。未配置 Key 时全程免 Key 零成本。
+              </div>
             </div>
           </section>
 
           <!-- vision -->
           <section class="panel">
-            <div class="panel-h"><span class="n">02</span><span class="tt">Vision</span><span class="desc">识图</span></div>
+            <div class="panel-h"><span class="n">03</span><span class="tt">Vision</span><span class="desc">识图</span></div>
             <div class="panel-b">
               <div class="row between">
                 <div><div class="label">Image Recognition</div><div class="hint">识图总开关</div></div>
@@ -411,7 +463,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- keywords -->
           <section class="panel">
-            <div class="panel-h"><span class="n">03</span><span class="tt">Triggers</span><span class="desc">提名列表</span></div>
+            <div class="panel-h"><span class="n">04</span><span class="tt">Triggers</span><span class="desc">提名列表</span></div>
             <div class="panel-b">
               <div class="hint" style="margin-bottom:10px">群聊中出现以下任意一个词后视作被提及</div>
               <div class="row wrap" style="gap:6px">
@@ -429,6 +481,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
                 <div class="k">MODE</div><div class="v">{{ settings.at_only ? '仅提及触发（AT ONLY）' : '自主互动（' + settings.infer_mode + '）' }}</div>
                 <div class="k">REPLY</div><div class="v">全局 {{ settings.default_mode || '扮演' }} 模式</div>
                 <div class="k">COOLDOWN</div><div class="v">自动 {{ settings.reply_cooldown }}s / 提及 {{ settings.reply_cooldown_at }}s</div>
+                <div class="k">DELAY</div><div class="v">{{ settings.reply_delay_min }}s ~ {{ settings.reply_delay_max }}s</div>
                 <div class="k">PROB</div><div class="v">{{ settings.dive_probability }}%</div>
               </div>
             </div>
@@ -436,7 +489,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- target ops -->
           <section class="panel">
-            <div class="panel-h"><span class="n">04</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
+            <div class="panel-h"><span class="n">05</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
             <div class="panel-b">
               <div class="row">
                 <input type="text" v-model="targetId" placeholder="QQ号 / group_群号 / group_群号_QQ号">
@@ -475,7 +528,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- command reference -->
           <section class="panel">
-            <div class="panel-h"><span class="n">05</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
+            <div class="panel-h"><span class="n">06</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
             <div class="panel-b tight">
               <pre class="mono small" style="padding:16px;white-space:pre-wrap;line-height:1.9;color:#bdbdbd;max-height:470px;overflow:auto">{{ helpText || '// 暂无指令说明' }}</pre>
             </div>
@@ -980,7 +1033,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
           <div class="panel-h"><span class="n">LS</span><span class="tt">Profiles</span><span class="desc">{{ models.profiles.length }} ENDPOINTS</span></div>
           <div class="panel-b tight">
             <table class="plist">
-              <thead><tr><th style="width:44px">#</th><th>PROFILE</th><th>ENDPOINT</th><th style="width:170px">KEY</th><th style="width:150px">USED BY</th><th style="width:150px"></th></tr></thead>
+              <thead><tr><th style="width:44px">#</th><th>PROFILE</th><th>ENDPOINT</th><th style="width:170px">KEY</th><th style="width:110px">USED BY</th><th style="width:250px"></th></tr></thead>
               <tbody>
                 <template v-for="(p,i) in models.profiles" :key="p.id">
                 <tr>
@@ -998,28 +1051,37 @@ input[type=range]{accent-color:var(--accent);width:100%}
                   </td>
                   <td>
                     <div class="ops">
-                      <button class="btn sm" :disabled="modelTests[p.id] && modelTests[p.id].loading" @click="testProfile(p)">{{ modelTests[p.id] && modelTests[p.id].loading ? 'TESTING' : 'TEST' }}</button>
+                      <button class="btn sm" :disabled="modelTests[p.id] && modelTests[p.id].loadingText" @click="testProfile(p, 'text')">{{ modelTests[p.id] && modelTests[p.id].loadingText ? '连接中...' : '连接测试' }}</button>
+                      <button class="btn sm" :disabled="modelTests[p.id] && modelTests[p.id].loadingVision" @click="testProfile(p, 'vision')">{{ modelTests[p.id] && modelTests[p.id].loadingVision ? '识图中...' : '识图测试' }}</button>
                       <button class="btn sm" @click="editProfile(p)">EDIT</button>
                       <button class="btn sm danger" @click="deleteProfile(p)">DEL</button>
                     </div>
                   </td>
                 </tr>
-                <tr v-if="modelTests[p.id] && !modelTests[p.id].loading">
+                <tr v-if="modelTests[p.id] && (modelTests[p.id].loadingText || modelTests[p.id].loadingVision || modelTests[p.id].text || modelTests[p.id].vision)">
                   <td colspan="6" style="padding:10px 14px">
-                    <div class="row wrap" style="gap:8px;align-items:center">
-                      <span class="tag" :class="modelTests[p.id].text && modelTests[p.id].text.ok ? 'y' : 'r'">
-                        TEXT {{ modelTests[p.id].text && modelTests[p.id].text.ok ? 'OK' : 'FAIL' }}
-                      </span>
-                      <span v-if="modelTests[p.id].text && modelTests[p.id].text.ok" class="mono small faint">{{ modelTests[p.id].text.latency_ms }}ms · {{ modelTests[p.id].text.reply }}</span>
-                      <span v-if="modelTests[p.id].text && modelTests[p.id].text.note" class="mono small" style="color:var(--accent)">{{ modelTests[p.id].text.note }}</span>
-                      <span v-else class="mono small" style="color:#ff8a80">{{ modelTests[p.id].text ? modelTests[p.id].text.error : '' }}</span>
+                    <div v-if="modelTests[p.id].loadingText" class="row wrap" style="gap:8px;align-items:center">
+                      <span class="tag y">CONN TESTING</span>
+                      <span class="mono small faint">正在测试端点连通性与响应延迟...</span>
                     </div>
-                    <div v-if="modelTests[p.id].vision" class="row wrap" style="gap:8px;align-items:center;margin-top:8px">
+                    <div v-else-if="modelTests[p.id].text" class="row wrap" style="gap:8px;align-items:center">
+                      <span class="tag" :class="modelTests[p.id].text.ok ? 'y' : 'r'">
+                        CONN {{ modelTests[p.id].text.ok ? 'OK' : 'FAIL' }}
+                      </span>
+                      <span v-if="modelTests[p.id].text.ok" class="mono small faint">{{ modelTests[p.id].text.latency_ms }}ms · {{ modelTests[p.id].text.reply }}</span>
+                      <span v-if="modelTests[p.id].text.note" class="mono small" style="color:var(--accent)">{{ modelTests[p.id].text.note }}</span>
+                      <span v-if="!modelTests[p.id].text.ok" class="mono small" style="color:#ff8a80">{{ modelTests[p.id].text.error }}</span>
+                    </div>
+                    <div v-if="modelTests[p.id].loadingVision" class="row wrap" style="gap:8px;align-items:center" :style="(modelTests[p.id].loadingText || modelTests[p.id].text) ? 'margin-top:8px' : ''">
+                      <span class="tag c">VISION TESTING</span>
+                      <span class="mono small faint">正在发送测试图片探测视觉解析能力...</span>
+                    </div>
+                    <div v-else-if="modelTests[p.id].vision" class="row wrap" style="gap:8px;align-items:center" :style="(modelTests[p.id].loadingText || modelTests[p.id].text) ? 'margin-top:8px' : ''">
                       <span class="tag" :class="modelTests[p.id].vision.supported ? 'c' : 'r'">
                         VISION {{ modelTests[p.id].vision.supported ? 'OK' : 'FAIL' }}
                       </span>
                       <span v-if="modelTests[p.id].vision.ok" class="mono small faint">{{ modelTests[p.id].vision.latency_ms }}ms · {{ modelTests[p.id].vision.reply }}</span>
-                      <span v-else class="mono small" style="color:#ff8a80">{{ modelTests[p.id].vision.error }}</span>
+                      <span v-if="!modelTests[p.id].vision.ok" class="mono small" style="color:#ff8a80">{{ modelTests[p.id].vision.error }}</span>
                       <span v-if="modelTests[p.id].vision.note" class="mono small" style="color:var(--accent)">{{ modelTests[p.id].vision.note }}</span>
                     </div>
                   </td>
@@ -1150,6 +1212,7 @@ createApp({
         { id:'model',   idx:'07', en:'Model', cn:'模型路由' },
       ],
       clock: '--:--:--',
+      botRunning: false, botPid: null,
       status: { log_active:false, db_size:0, prompt_count:0, enabled_prompt_count:0, bot_qq:'' },
       settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3 },
       musing: { config:{ interval_minutes:120, private_enabled:true, group_enabled:true, min_importance:0.7 }, overrides:{}, scopes:[] },
@@ -1162,10 +1225,12 @@ createApp({
       scope: '', searchQuery: '', searchScopes: '', results: [],
       embedText: '', embedInfo: null,
       logs: [], paused: false, autoscroll: true, wsOpen: false, lastLogKey: '',
+      ws: null, wsLastMsg: 0,
       logFilterSet: [], 
       logFilters: [
-        {key:'judge',label:'判断'},{key:'rag',label:'RAG'},{key:'vector',label:'向量'},
-        {key:'memory',label:'记忆'},{key:'reply',label:'回复'},{key:'freq',label:'频率'},
+        {key:'judge',label:'判断'},{key:'reply',label:'回复'},{key:'chat',label:'群聊'},
+        {key:'search',label:'搜索'},{key:'quote',label:'引用'},{key:'rag',label:'RAG'},
+        {key:'vector',label:'向量'},{key:'memory',label:'记忆'},{key:'freq',label:'频率'},
         {key:'musing',label:'发散'},{key:'error',label:'错误'},
       ],
       promptItems: [],
@@ -1220,7 +1285,8 @@ createApp({
   },
   mounted() {
     this.tick(); setInterval(this.tick, 1000);
-    this.refreshStatus(); setInterval(this.refreshStatus, 15000);
+    this.refreshStatus(); this.refreshBotStatus();
+    setInterval(()=>{ this.refreshStatus(); this.refreshBotStatus(); }, 15000);
     this.loadSettings(); this.loadHelp(); this.loadPrompts(); this.loadMusing(); this.loadArchives();
     this.connectWS();
     this.$watch('tab', v => {
@@ -1228,8 +1294,15 @@ createApp({
       if(v==='archive') this.loadArchives();
       if(v==='musing') this.loadMusing();
       if(v==='model') this.loadModels();
+      if(v==='logs') this.scrollBottom();
     });
     this.$watch(()=>this.filteredLogs.length, ()=>{ if(this.autoscroll) this.scrollBottom(); });
+    // 看门狗：服务端每 10s 有心跳，超过 35s 收不到任何帧说明连接半开，强制断开触发重连
+    setInterval(()=>{
+      if(this.wsOpen && Date.now() - this.wsLastMsg > 35000){
+        try{ this.ws && this.ws.close(); }catch(e){}
+      }
+    }, 10000);
   },
   methods: {
     tick(){
@@ -1262,6 +1335,24 @@ createApp({
 
     /* ---- status/settings ---- */
     async refreshStatus(){ try { this.status = await this.api('/api/status'); } catch(e){} },
+    async refreshBotStatus(){
+      try { const s = await this.api('/api/bot/status'); this.botRunning = !!s.running; this.botPid = s.pid; } catch(e){}
+    },
+    botAction(kind){
+      const isShutdown = kind==='shutdown';
+      if(!confirm(isShutdown ? '确认关机？机器人将停止回复（WebUI 不受影响）。' : '确认重启机器人？')) return;
+      this.guard(async()=>{
+        await this.api('/api/bot/' + kind, {method:'POST', body:{}});
+        await this.refreshBotStatus();
+        if(!isShutdown){
+          for(let i=0;i<20 && !this.botRunning;i++){
+            await new Promise(r=>setTimeout(r,500));
+            await this.refreshBotStatus();
+          }
+          if(!this.botRunning) throw new Error('重启超时，请查看日志');
+        }
+      }, isShutdown ? '机器人已关机' : '机器人已重启');
+    },
     async loadSettings(){ try { this.settings = await this.api('/api/settings'); } catch(e){} },
     async loadHelp(){ try { this.helpText = (await this.api('/api/help')).text; } catch(e){} },
     async saveSettings(patch){
@@ -1554,15 +1645,26 @@ createApp({
       }, role==='main' ? '主模型已切换' : '分模型已切换');
     },
     resetProfileForm(){ this.profileForm = { id:null, name:'', url:'', key:'', model:'' }; },
-    async testProfile(p){
-      if(this.modelTests[p.id] && this.modelTests[p.id].loading) return;
-      this.modelTests[p.id] = { loading:true };
-      try {
-        const r = await this.api('/api/models/test',{method:'POST',body:{id:p.id}});
-        r.loading = false;
-        this.modelTests[p.id] = r;
-      } catch(e){
-        this.modelTests[p.id] = { loading:false, text:{ok:false,error:(e&&e.message)||'请求失败'}, vision:null };
+    async testProfile(p, type = 'text'){
+      const current = this.modelTests[p.id] || { text: null, vision: null, loadingText: false, loadingVision: false };
+      if(type === 'text'){
+        if(current.loadingText) return;
+        this.modelTests[p.id] = { ...current, loadingText: true };
+        try {
+          const r = await this.api('/api/models/test', {method:'POST', body:{id:p.id, type:'text'}});
+          this.modelTests[p.id] = { ...(this.modelTests[p.id] || current), loadingText: false, text: r.text };
+        } catch(e){
+          this.modelTests[p.id] = { ...(this.modelTests[p.id] || current), loadingText: false, text: { ok:false, error:(e&&e.message)||'请求失败' } };
+        }
+      } else if(type === 'vision'){
+        if(current.loadingVision) return;
+        this.modelTests[p.id] = { ...current, loadingVision: true };
+        try {
+          const r = await this.api('/api/models/test', {method:'POST', body:{id:p.id, type:'vision'}});
+          this.modelTests[p.id] = { ...(this.modelTests[p.id] || current), loadingVision: false, vision: r.vision };
+        } catch(e){
+          this.modelTests[p.id] = { ...(this.modelTests[p.id] || current), loadingVision: false, vision: { ok:false, supported:false, error:(e&&e.message)||'请求失败' } };
+        }
       }
     },
     editProfile(p){
@@ -1583,6 +1685,7 @@ createApp({
       await this.guard(async()=>{
         this.models = await this.api('/api/models/profile/delete',{method:'POST',body:{id:p.id}});
         if(this.profileForm.id===p.id) this.resetProfileForm();
+        if(this.modelTests[p.id]) delete this.modelTests[p.id];
       }, '已删除 ' + p.name);
     },
 
@@ -1590,13 +1693,18 @@ createApp({
     logClass(line){
       if(/\[错误\]|Traceback|Exception|失败/.test(line)) return 'error';
       if(/\[判断\]/.test(line)) return 'judge';
+      if(/\[回复\]/.test(line)) return 'reply';
+      if(/\[搜索\]/.test(line)) return 'search';
+      if(/\[引用\]/.test(line)) return 'quote';
+      if(/\[识图\]/.test(line)) return 'vision';
       if(/\[RAG\]/.test(line)) return 'rag';
       if(/\[向量\]/.test(line)) return 'vector';
-      if(/\[记忆\]/.test(line)) return 'memory';
-      if(/\[回复\]/.test(line)) return 'reply';
-      if(/\[频率\]|\[冷却\]/.test(line)) return 'freq';
-      if(/\[胡思乱想\]|发散/.test(line)) return 'musing';
+      if(/\[记忆/.test(line)) return 'memory';
+      if(/\[频率\]|\[冷却\]|\[去重\]|\[延迟\]/.test(line)) return 'freq';
+      if(/\[胡思乱想\]|\[发散\]/.test(line)) return 'musing';
       if(/\[掷骰\]|\[指令\]|\[设置\]/.test(line)) return 'do';
+      if(/\[群聊\]|收到私聊消息|群\s*\d+\s*收到/.test(line)) return 'chat';
+      if(/\[系统\]|\[WebUI\]|\[API\]|\[档案\]|\[迁移\]|实时监控已连接/.test(line)) return 'sys';
       return '';
     },
     toggleFilter(k){
@@ -1615,13 +1723,16 @@ createApp({
     connectWS(){
       const proto = location.protocol==='https:'?'wss':'ws';
       const ws = new WebSocket(`${proto}://${location.host}/ws/logs`);
-      ws.onopen = ()=>{ this.wsOpen=true; };
+      this.ws = ws;
+      ws.onopen = ()=>{ this.wsOpen=true; this.wsLastMsg=Date.now(); };
       ws.onclose = ()=>{ this.wsOpen=false; setTimeout(()=>this.connectWS(), 3000); };
       ws.onerror = ()=>{ try{ws.close();}catch(e){} };
       ws.onmessage = (ev)=>{
-        if(this.paused) return;
+        this.wsLastMsg = Date.now();
         const msg = JSON.parse(ev.data);
-        if(msg.type==='init'){ this.logs = []; this.addLogs(msg.lines); if(this.autoscroll) this.scrollBottom(); }
+        if(msg.type==='ping') return;
+        if(this.paused) return;
+        if(msg.type==='init'){ this.logs = []; this.addLogs(msg.lines); this.scrollBottom(); }
         else if(msg.type==='append'){ this.addLogs(msg.lines); }
       };
     },

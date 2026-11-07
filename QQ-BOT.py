@@ -12,6 +12,7 @@ import part_record
 import part_command
 import part_prompt
 import part_api
+import part_search
 import os
 
 # Windows 控制台默认 GBK，打印 emoji 会直接 UnicodeEncodeError 干崩主循环
@@ -522,12 +523,12 @@ async def resolve_quoted_text(websocket, scope, message_id):
 # ====================
 
 
-# 回复判断
+# 回复判断（返回 {"reply": bool, "search": 搜索词或None}，search 由分模型顺手提取）
 async def should_reply(group_id):
     judge_prompt = load_internal_prompt("09_群聊判断.txt")
     if not judge_prompt:
         log("[判断] 判断提示词已被关闭，默认不回复")
-        return False
+        return {"reply": False, "search": None}
     try:
         group_mem = await asyncio.to_thread(
             part_record.load_user_memory, f"group_{group_id}"
@@ -557,19 +558,116 @@ async def should_reply(group_id):
             "stream": False
         }
         raw = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
-        # 兼容两种输出：JSON（{"reply": true, "emotion": "..."}）或纯文本 [回复]/[忽略]
+        # 兼容两种输出：JSON（{"reply": true, "emotion": "...", "search": "..."}）或纯文本 [回复]/[忽略]
         result = parse_json_loose(raw)
         if isinstance(result, dict):
             reply_flag = bool(result.get("reply"))
             emotion = str(result.get("emotion", "")).strip()
             reason = str(result.get("reason", "")).strip()
-            log(f"[判断] 群 {group_id} 待判断: {lines[-1][:40] if lines else ''} | 输出: {'回复' if reply_flag else '忽略'} 情绪={emotion} 理由={reason}")
-            return reply_flag
+            search_q = str(result.get("search", "") or "").strip()
+            search_reason = str(result.get("search_reason", "") or "").strip()
+            # 搜索字段无论是否提取都完整落日志：能区分"没判回"和"判回了但填了无"，以及理由
+            log(f"[判断] 群 {group_id} 待判断: {lines[-1][:40] if lines else ''} | 输出: {'回复' if reply_flag else '忽略'} 情绪={emotion} 理由={reason} 搜索={search_q or '无'} 搜索理由={search_reason or '无'}")
+            if search_q.lower() in ("", "无", "none", "null", "不需要"):
+                search_q = None
+            return {"reply": reply_flag, "search": search_q}
         log(f"[判断] 群 {group_id} 待判断: {lines[-1][:40] if lines else ''} | 输出: {(raw or '')[:30]}")
-        return "[回复]" in (raw or "")
+        return {"reply": "[回复]" in (raw or ""), "search": None}
     except Exception as e:
         log(f"[判断] 群 {group_id} 判断失败（默认不回复）: {e}")
-        return False
+        return {"reply": False, "search": None}
+
+
+# 私聊/群@搜索词提取（借用 09_群聊判断 的搜索准则，仅用于事实提问检出）
+async def extract_search_query_private(user_id, msg_text, label="私聊"):
+    if not msg_text or not msg_text.strip():
+        return None
+    judge_prompt = load_internal_prompt("09_群聊判断.txt")
+    if not judge_prompt:
+        return None
+    try:
+        user_mem = await asyncio.to_thread(
+            part_record.load_user_memory, str(user_id)
+        )
+        history = user_mem.get("chat_history", [])[-5:]
+        lines = []
+        for msg in history:
+            role_prefix = "我：" if msg.get("role") == "assistant" else "对方："
+            lines.append(f"{role_prefix}{msg.get('content', '')}")
+        if lines:
+            judge_input = "【最近聊天记录】\n" + "\n".join(lines) + f"\n\n【新消息】\n对方：{msg_text}"
+        else:
+            judge_input = f"【新消息】\n对方：{msg_text}"
+
+        route = part_api.get_route("sub")
+        payload = {
+            "model": route.get("model") or JUDGE_MODEL,
+            "messages": [
+                {"role": "system", "content": judge_prompt},
+                {"role": "user", "content": judge_input}
+            ],
+            "stream": False
+        }
+        raw = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
+        result = parse_json_loose(raw)
+        if isinstance(result, dict):
+            search_q = str(result.get("search", "") or "").strip()
+            search_reason = str(result.get("search_reason", "") or "").strip()
+            log(f"[判断] {label} {user_id} 待判断: {msg_text[:40]} | 搜索={search_q or '无'} 搜索理由={search_reason or '无'}")
+            if search_q.lower() in ("", "无", "none", "null", "不需要"):
+                return None
+            return search_q
+        return None
+    except Exception as e:
+        log(f"[判断] 私聊 {user_id} 搜索提取异常: {e}")
+        return None
+
+
+# ====== 联网搜索 ======
+# 显式触发词（本地零成本规则）：群友明确说"搜一下"时才命中，不搞泛匹配防误触
+_SEARCH_CMD = re.compile(r"搜一下|搜索一下|帮我搜|帮我查|查一下|百度一下|谷歌一下|百度搜索|谷歌搜索")
+# 搜索冷却：按作用域（群/私聊）各自计时，冷却内降级为无资料回复
+_last_search_time = {}
+
+
+def extract_explicit_query(text, enabled=True):
+    """从消息里提取显式搜索指令后的关键词，没有指令或开关关闭时返回 None。"""
+    if not enabled:
+        return None
+    m = _SEARCH_CMD.search(text or "")
+    if not m:
+        return None
+    q = text[m.end():].strip(" ，。,.?？!！:：~～")
+    return q if len(q) >= 2 else None
+
+
+async def run_search(scope, query, settings):
+    """执行联网检索。返回参考资料文本；冷却中/未启用/失败均返回 None（降级正常回复）。"""
+    if not query or not settings.get("search_enabled", True):
+        return None
+    cooldown = float(settings.get("search_cooldown", 600))
+    now = time.time()
+    if now - _last_search_time.get(scope, 0) < cooldown:
+        log(f"[搜索] {scope} 搜索冷却中（{cooldown:g}s），跳过联网降级回复")
+        return None
+    _last_search_time[scope] = now
+    log(f"[搜索] {scope} 触发联网检索: {query}")
+    try:
+        result = await part_search.search_web(
+            query, tavily_key=settings.get("tavily_api_key", "")
+        )
+    except Exception as e:
+        log(f"[搜索] {scope} 检索异常: {e}")
+        # 失败不给满冷却，60 秒后即可重试
+        _last_search_time[scope] = now - cooldown + 60
+        return None
+    if result:
+        log(f"[搜索] {scope} 检索完成（{len(result)} 字）: {result[:60]}")
+    else:
+        log(f"[搜索] {scope} 未搜到有效资料，按无资料回复")
+        # 无结果说明资料本来就不存在，短冷却防连续重搜
+        _last_search_time[scope] = now - cooldown + 120
+    return result
 
 
 # 记忆总结
@@ -674,7 +772,7 @@ async def summarize_memory(user_id, update_favorability=True):
 
 # 主模型
 
-async def call_your_api(user_id, message, group_id=None, image=None):
+async def call_your_api(user_id, message, group_id=None, image=None, search_context=None):
     route = part_api.get_route("main")
     if not route.get("key"):
         return "[错误] 未配置主模型端点（api.json / WebUI 模型路由）"
@@ -733,6 +831,13 @@ async def call_your_api(user_id, message, group_id=None, image=None):
         if group_reminder:
             messages_with_prompt.append({"role": "system", "content": group_reminder})
 
+    # 联网检索资料：临时的 system 消息注入，不进历史不污染记忆
+    if search_context:
+        messages_with_prompt.append({"role": "system", "content":
+            f"【实时检索资料】\n{search_context}\n"
+            f"（以上是刚联网搜到的信息，时效性优先于你已有的记忆，回复时自然运用即可，不要暴露资料来源）"
+        })
+
     if not context_includes_message:
         if image:
             content = [
@@ -780,10 +885,15 @@ async def call_your_api(user_id, message, group_id=None, image=None):
             memory["chat_history"] = context[-200:]
             await asyncio.to_thread(part_record.save_user_memory, user_id, memory)
 
-        # 随机延迟（拟人+防风控）
-        delay = random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX)
-        print(f"[延迟] 本次回复延迟 {delay:.1f} 秒")
-        await asyncio.sleep(delay)
+        # 随机延迟（拟人+防风控，可设 0 关闭）
+        d_min = float(settings.get("reply_delay_min", REPLY_DELAY_MIN))
+        d_max = float(settings.get("reply_delay_max", REPLY_DELAY_MAX))
+        if d_max < d_min:
+            d_min, d_max = d_max, d_min
+        delay = random.uniform(d_min, d_max) if d_max > 0 else 0
+        if delay > 0:
+            log(f"[延迟] 本次回复延迟 {delay:.1f} 秒")
+            await asyncio.sleep(delay)
 
         return reply
 
@@ -795,9 +905,9 @@ async def call_your_api(user_id, message, group_id=None, image=None):
 
 
 # ====== 后台回复 ======
-async def reply_private(websocket, user_id, msg_text, image=None):
+async def reply_private(websocket, user_id, msg_text, image=None, search_context=None):
     try:
-        reply = await call_your_api(user_id, msg_text, image=image)
+        reply = await call_your_api(user_id, msg_text, image=image, search_context=search_context)
         if reply is None or reply.startswith("[错误]"):
             return
         await part_command.send_private(websocket, user_id, reply)
@@ -807,9 +917,9 @@ async def reply_private(websocket, user_id, msg_text, image=None):
         log(f"[错误] 私聊回复任务异常 user={user_id}: {e}")
 
 
-async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None):
+async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None, search_context=None):
     try:
-        reply = await call_your_api(mem_key, msg_text, group_id=group_id, image=image)
+        reply = await call_your_api(mem_key, msg_text, group_id=group_id, image=image, search_context=search_context)
         if reply is None or reply.startswith("[错误]"):
             return
         # 引用判断：目标消息距今超过阈值条才引用，避免每条都挂引用
@@ -927,7 +1037,16 @@ async def handler(websocket):
                         quoted = await resolve_quoted_text(websocket, str(user_id), quoted_id)
                         if quoted:
                             record_text = f"（回复「{quoted}」）{record_text}"
-                    asyncio.create_task(reply_private(websocket, user_id, record_text, vision_image))
+                    # 私聊搜索：先看显式指令（搜一下xxx），未匹配则调分模型从问句中提取时效搜索词
+                    search_query = extract_explicit_query(
+                        msg_text, settings.get("search_explicit_cmd_enabled", True)
+                    )
+                    if not search_query and settings.get("search_enabled", True):
+                        search_query = await extract_search_query_private(user_id, msg_text)
+                    search_ctx = await run_search(
+                        f"private_{user_id}", search_query, settings
+                    )
+                    asyncio.create_task(reply_private(websocket, user_id, record_text, vision_image, search_ctx))
 
                 # ===== 群聊消息 ======
                 elif event.get("message_type") == "group":
@@ -975,8 +1094,9 @@ async def handler(websocket):
                     is_called = any(name in msg_text for name in name_keywords)
                     triggered = is_at_me or is_called
 
-                    # 指令只在被触发时响应，且不进群共享档案
-                    if triggered and msg_text.strip().startswith("/"):
+                    # 斜杠指令无论是否@都响应（未@时静默吞掉会被当成闲聊判回，用户以为设置成功实际没生效）
+                    # 指令处理内部自行校验管理员权限；未识别的斜杠文本返回 False 继续走正常流程
+                    if msg_text.strip().startswith("/"):
                         mem_key = f"group_{group_id}_{user_id}"
                         if await part_command.handle_group_command(
                             websocket, group_id, user_id, msg_text, admin,
@@ -984,9 +1104,21 @@ async def handler(websocket):
                         ):
                             continue
 
+                    # 频率上限前置：@/喊名字与自动插嘴分开计时，互不占用
+                    # 两个冷却都置顶：冷却期内消息只入档，不做识图/判回/搜索；冷却外才走判回
+                    now = time.time()
+                    if triggered:
+                        cooldown = settings.get("reply_cooldown_at", REPLY_COOLDOWN_AT)
+                        rate_key = f"group_{group_id}_at"
+                    else:
+                        cooldown = settings.get("reply_cooldown", REPLY_COOLDOWN)
+                        rate_key = f"group_{group_id}"
+                    in_cooldown = now - _last_reply_time.get(rate_key, 0) < cooldown
+
                     # 闲聊消息写入群共享上下文（识图 caption / 引用原文一并写入，后续消息才能看懂语境）
+                    # 冷却期内只入档案：不做识图（分模型调用），图片按纯文本入库
                     record_text, vision_image = msg_text.strip(), None
-                    if image_url:
+                    if image_url and not in_cooldown:
                         tag, vision_image = await prepare_vision(image_url, image_is_meme, settings, admin)
                         record_text = (record_text + tag).strip()
                     if quoted_id:
@@ -998,26 +1130,24 @@ async def handler(websocket):
                         f"{nickname}：{record_text}", message_id=mid
                     )
 
-                    # 未触发且仅提及模式：直接跳过，不进冷却也不判定
-                    if not triggered and settings.get("at_only", True):
+                    # 显式搜索指令（搜一下xxx）：所有路径统一先扫，零成本
+                    search_query = extract_explicit_query(
+                        msg_text, settings.get("search_explicit_cmd_enabled", True)
+                    )
+
+                    # 未触发且仅提及模式：直接跳过，不进冷却也不判定（显式搜索指令除外，用户明确要求查资料）
+                    if not triggered and not search_query and settings.get("at_only", True):
                         log(f"[群聊] 群 {group_id} {nickname} 的消息未触发（当前为仅提及模式）")
                         continue
 
-                    # 频率上限前置：@/喊名字与自动插嘴分开计时，互不占用（@之间仍保冷却防刷屏）
                     # 冷却期内直接跳过，连判定（分模型调用/掷骰）都不做，省算力
-                    now = time.time()
-                    if triggered:
-                        cooldown = settings.get("reply_cooldown_at", REPLY_COOLDOWN_AT)
-                        rate_key = f"group_{group_id}_at"
-                    else:
-                        cooldown = settings.get("reply_cooldown", REPLY_COOLDOWN)
-                        rate_key = f"group_{group_id}"
-                    if now - _last_reply_time.get(rate_key, 0) < cooldown:
-                        log(f"[频率] 群 {group_id} 回复间隔不足 {cooldown:g} 秒，已跳过")
+                    if in_cooldown:
+                        log(f"[频率] 群 {group_id} 回复间隔不足 {cooldown:g} 秒，已跳过（仅入档案）")
                         continue
 
-                    # 触发判定：@ 或喊名字直接触发，否则自主潜水模式下按 infer 设置分流
-                    if not triggered:
+                    # 触发判定：@ 或喊名字直接触发；显式搜索指令同样直接响应，不过判回
+                    # 其余自主潜水模式下按 infer 设置分流
+                    if not triggered and not search_query:
                         infer_mode = settings.get("infer_mode", "AI")
                         if infer_mode == "PY":
                             # 概率掷骰
@@ -1028,17 +1158,29 @@ async def handler(websocket):
                                 continue
                             log(f"[掷骰] 群 {group_id} 掷出 {roll:.1f} < {probability:g}%，插嘴回复")
                         else:
-                            # AI判断
-                            if not await should_reply(group_id):
+                            # AI判断（分模型顺手提取搜索词，见 09_群聊判断.txt）
+                            verdict = await should_reply(group_id)
+                            if not verdict["reply"]:
                                 log(f"[群聊] 群 {group_id} {nickname} 的消息判断为不回复")
                                 continue
                             log(f"[判断] 群 {group_id} 决定参与互动")
+                            if not search_query:
+                                search_query = verdict.get("search")
+                    elif search_query and not triggered:
+                        log(f"[搜索] 群 {group_id} 收到显式搜索指令，直接响应: {search_query}")
+
+                    # @提及无显式指令时与私聊对齐：分模型从自然问句提取时效搜索词
+                    if triggered and not search_query and settings.get("search_enabled", True):
+                        search_query = await extract_search_query_private(
+                            f"group_{group_id}_{user_id}", msg_text, label="群@"
+                        )
 
                     log(f"群 {group_id} 收到 {nickname} 的消息: {msg_text}")
                     _last_reply_time[rate_key] = now
+                    search_ctx = await run_search(f"group_{group_id}", search_query, settings)
                     asyncio.create_task(reply_group(
                         websocket, group_id, f"group_{group_id}_{user_id}", record_text,
-                        image=vision_image, reply_to=mid
+                        image=vision_image, reply_to=mid, search_context=search_ctx
                     ))
     except Exception as e:
         log(f"[错误] 连接断开或发生异常: {e}")
@@ -1154,4 +1296,12 @@ async def main():
 
 
 if __name__ == "__main__":
+    # 写 PID 文件供 WebUI 一键关机/重启（隐藏窗口下进程不好手动找）
+    _PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "bot.pid")
+    try:
+        os.makedirs(os.path.dirname(_PID_FILE), exist_ok=True)
+        with open(_PID_FILE, "w", encoding="utf-8") as _f:
+            _f.write(str(os.getpid()))
+    except Exception:
+        pass
     asyncio.run(main())

@@ -714,6 +714,16 @@ DEFAULT_SETTINGS = {
     "vision_admin_only": False,
     "vision_probability": 100,
     "vision_meme_probability": 30,
+    # 联网搜索：总开关 + 搜索冷却（秒，按群/私聊独立计；冷却内降级为无资料回复）
+    # + Tavily API Key（LLM 友好搜索源，tavily.com 免费额度；留空走 Jina/必应免 Key 链）
+    # + 显式指令开关（关闭后"搜一下/帮我查"等本地指令不再触发，仅 AI 判回提取搜索词）
+    "search_enabled": True,
+    "search_cooldown": 600,
+    "tavily_api_key": "",
+    "search_explicit_cmd_enabled": True,
+    # 随机回复延迟（秒）：拟人+防风控，max=0 则关闭延迟
+    "reply_delay_min": 1.0,
+    "reply_delay_max": 3.0,
     # 引用回复：目标消息距今超过此条数就引用发送（0=总是引用）
     "quote_threshold": 3,
     # 单档案覆盖：{"QQ号": {"enabled": true, "interval_minutes": 30}, "group_xxx": {...}}
