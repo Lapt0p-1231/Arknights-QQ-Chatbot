@@ -760,7 +760,7 @@ async def reply_private(websocket, user_id, msg_text, image=None):
         log(f"[错误] 私聊回复任务异常 user={user_id}: {e}")
 
 
-async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None, reply_ts=None):
+async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None):
     try:
         reply = await call_your_api(mem_key, msg_text, group_id=group_id, image=image)
         # 引用判断：目标消息距今超过阈值条才引用，避免每条都挂引用
@@ -769,7 +769,7 @@ async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_
             settings = await asyncio.to_thread(part_record.load_settings)
             threshold = int(settings.get("quote_threshold", 3))
             newer = await asyncio.to_thread(
-                part_record.count_group_history_after, group_id, reply_ts
+                part_record.count_group_history_after, group_id, reply_to
             )
             if newer >= threshold:
                 quote = reply_to
@@ -986,7 +986,7 @@ async def handler(websocket):
                     _last_reply_time[rate_key] = now
                     asyncio.create_task(reply_group(
                         websocket, group_id, f"group_{group_id}_{user_id}", record_text,
-                        image=vision_image, reply_to=mid, reply_ts=event.get("time")
+                        image=vision_image, reply_to=mid
                     ))
     except Exception as e:
         log(f"[错误] 连接断开或发生异常: {e}")

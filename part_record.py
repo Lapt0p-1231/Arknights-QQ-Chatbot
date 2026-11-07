@@ -855,12 +855,31 @@ def save_user_memory(user_id, memory_data):
             "INSERT INTO user_profile VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
             (user_id, json.dumps(profile, ensure_ascii=False))
         )
-        # 热层整体覆盖
+        # 热层整体覆盖（按 角色+内容 对齐保留原 ts 和 message_id：
+        # 之前每次存档都把全部时间戳刷成"刚刚"且丢掉 message_id，
+        # 导致引用回复的"距今条数"恒等于全量历史、引用原文本地查询失效）
+        old_rows = conn.execute(
+            "SELECT role, content, ts, message_id FROM chat_history WHERE user_id=? ORDER BY ts",
+            (user_id,)
+        ).fetchall()
+        old_meta = {}
+        for o_role, o_content, o_ts, o_mid in old_rows:
+            old_meta.setdefault((o_role, o_content), []).append((o_ts, o_mid))
         conn.execute("DELETE FROM chat_history WHERE user_id=?", (user_id,))
         now = time.time()
+        rows_to_insert = []
+        for i, m in enumerate(history):
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            matched = old_meta.get((role, content))
+            if matched:
+                ts, mid = matched.pop(0)
+            else:
+                ts, mid = now + i * 0.001, None
+            rows_to_insert.append((user_id, ts, role, content, mid))
         conn.executemany(
-            "INSERT INTO chat_history(user_id, ts, role, content) VALUES (?,?,?,?)",
-            [(user_id, now + i * 0.001, m.get("role", "user"), m.get("content", "")) for i, m in enumerate(history)]
+            "INSERT INTO chat_history(user_id, ts, role, content, message_id) VALUES (?,?,?,?,?)",
+            rows_to_insert
         )
         conn.commit()
     finally:
@@ -870,18 +889,26 @@ def save_user_memory(user_id, memory_data):
 
 # ======== 群共享上下文 ========
 # 全群共用一个 group_{群号} 档案，每条消息带昵称前缀
-def count_group_history_after(group_id, ts):
-    """群档案里比 ts 新的消息条数（引用回复的"距今条数"判断用）。查不到按已被刷上去处理。"""
-    if not ts:
+def count_group_history_after(group_id, message_id):
+    """群档案里目标消息之后又来了几条（引用回复的"距今条数"判断用）。
+    按入库顺序（rowid）数，不受存档重写时间戳影响；查不到目标按已被刷上去处理。"""
+    if not message_id:
         return 999
     try:
         conn = _db()
         try:
             row = conn.execute(
-                "SELECT COUNT(*) FROM chat_history WHERE user_id=? AND ts>?",
-                (f"group_{group_id}", float(ts))
+                "SELECT rowid FROM chat_history WHERE user_id=? AND message_id=? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (f"group_{group_id}", str(message_id))
             ).fetchone()
-            return row[0] if row else 0
+            if not row:
+                return 999
+            row2 = conn.execute(
+                "SELECT COUNT(*) FROM chat_history WHERE user_id=? AND rowid>?",
+                (f"group_{group_id}", row[0])
+            ).fetchone()
+            return row2[0] if row2 else 0
         finally:
             conn.close()
     except Exception:
