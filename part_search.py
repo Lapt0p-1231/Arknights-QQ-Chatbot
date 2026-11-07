@@ -11,6 +11,7 @@
 import asyncio
 import html
 import re
+import time
 from urllib.parse import quote
 
 import aiohttp
@@ -22,6 +23,8 @@ JINA_URL = "https://s.jina.ai/{}"
 BING_URL = "https://cn.bing.com/search?q={}"
 DEFAULT_MAX_CHARS = 300
 TIMEOUT = 20
+# 整次检索的总时长预算（秒）：降级查询链 × 多来源的重试轮次多，无总超时会拖住消息主循环
+TOTAL_TIMEOUT = 45
 _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 _JINA_HEADERS = {"Accept": "text/plain", "User-Agent": "QQ-BOT/1.0"}
 
@@ -205,36 +208,40 @@ def _clean_and_pick(text, query, max_chars):
     return "".join(out)
 
 
-async def search_web(query, max_chars=DEFAULT_MAX_CHARS, timeout=TIMEOUT, tavily_key=""):
+async def search_web(query, max_chars=DEFAULT_MAX_CHARS, timeout=TIMEOUT, tavily_key="", total_timeout=TOTAL_TIMEOUT):
     """返回清洗后的参考资料纯文本；失败返回 None（调用方降级为无资料回复）。
-    每个降级查询词按 Tavily（有 Key 时）→ Jina → 必应 顺序取首个有效来源；
-    清洗全落空时沿降级查询链简化重试。"""
+    每个降级查询词按 Tavily（有 Key 时）→ Jina → 必应 顺序逐源尝试：
+    源返回空、或清洗后判定为无关内容，都继续尝试下一来源，而不是拿到非空正文就定死。
+    total_timeout 是整次检索的总预算（含所有降级查询词与来源），单次请求超时会被剩余预算截断。"""
     query = (query or "").strip()
     if not query:
         return None
     tavily_key = (tavily_key or "").strip()
+    deadline = time.monotonic() + total_timeout
     for q in _fallback_queries(query):
-        body, source = "", ""
-        if tavily_key:
-            body = await _tavily_search(q, tavily_key, timeout) or ""
-            if body.strip():
-                source = "Tavily"
-        if not body.strip():
-            raw = await _fetch(JINA_URL.format(quote(q)), _JINA_HEADERS, timeout)
-            body = _jina_text(raw) if raw else ""
-            if body.strip():
-                source = "Jina"
-        if not body.strip():
-            raw = await _fetch(BING_URL.format(quote(q)), _UA, timeout)
-            body = _bing_text(raw) if raw else ""
-            if body.strip():
-                source = "必应"
-        if not body.strip():
-            continue
-        result = _clean_and_pick(body, q, max_chars)
-        if result:
-            if q != query:
-                log(f"[搜索] 原查询无有效结果，已改用简化词检索: {q}")
-            log(f"[搜索] 检索来源: {source}")
-            return result
+        for source in ("Tavily", "Jina", "必应"):
+            if source == "Tavily" and not tavily_key:
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log(f"[搜索] 检索超出总预算 {total_timeout:g}s，降级为无资料回复")
+                return None
+            per_timeout = max(1, min(timeout, remaining))
+            if source == "Tavily":
+                body = await _tavily_search(q, tavily_key, per_timeout) or ""
+            elif source == "Jina":
+                raw = await _fetch(JINA_URL.format(quote(q)), _JINA_HEADERS, per_timeout)
+                body = _jina_text(raw) if raw else ""
+            else:
+                raw = await _fetch(BING_URL.format(quote(q)), _UA, per_timeout)
+                body = _bing_text(raw) if raw else ""
+            if not body.strip():
+                continue
+            result = _clean_and_pick(body, q, max_chars)
+            if result:
+                if q != query:
+                    log(f"[搜索] 原查询无有效结果，已改用简化词检索: {q}")
+                log(f"[搜索] 检索来源: {source}")
+                return result
+            log(f"[搜索] {source} 内容清洗后无关，尝试下一来源")
     return None

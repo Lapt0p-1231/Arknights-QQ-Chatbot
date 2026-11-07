@@ -630,6 +630,24 @@ _SEARCH_CMD = re.compile(r"搜一下|搜索一下|帮我搜|帮我查|查一下|
 _last_search_time = {}
 
 
+def search_cooling(scope, settings):
+    """搜索冷却预判：冷却中返回 True。在提取搜索词之前调用，避免冷却期内白调分模型。"""
+    cooldown = float(settings.get("search_cooldown", 600))
+    return (time.time() - _last_search_time.get(scope, 0)) < cooldown
+
+
+# 事实问句预过滤：含疑问/时效特征才调分模型提取搜索词，避免每条私聊/@都白调一次
+_FACTUAL_HINT = re.compile(
+    r"[?？]|吗|嘛|呢|什么|啥|谁|哪|何时|多少|几|为什么|为啥|是不是|有没有|知不知道|"
+    r"最新|最近|近期|今天|昨天|今年|现在|当前|什么时候|啥时候|发布|上线|公测|开服|涨价|降价|价格|时间|日期"
+)
+
+
+def looks_like_factual_query(text):
+    """本地零成本预检：不像事实/时效问句就不走分模型提取（宁宽勿严，误放进来的由分模型判"无"）。"""
+    return bool(_FACTUAL_HINT.search(text or ""))
+
+
 def extract_explicit_query(text, enabled=True):
     """从消息里提取显式搜索指令后的关键词，没有指令或开关关闭时返回 None。"""
     if not enabled:
@@ -1038,14 +1056,19 @@ async def handler(websocket):
                         if quoted:
                             record_text = f"（回复「{quoted}」）{record_text}"
                     # 私聊搜索：先看显式指令（搜一下xxx），未匹配则调分模型从问句中提取时效搜索词
+                    # 冷却前置+问句预检：冷却期内或明显非事实问句时不调分模型
+                    search_scope = f"private_{user_id}"
                     search_query = extract_explicit_query(
                         msg_text, settings.get("search_explicit_cmd_enabled", True)
                     )
-                    if not search_query and settings.get("search_enabled", True):
+                    if (
+                        not search_query
+                        and settings.get("search_enabled", True)
+                        and not search_cooling(search_scope, settings)
+                        and looks_like_factual_query(msg_text)
+                    ):
                         search_query = await extract_search_query_private(user_id, msg_text)
-                    search_ctx = await run_search(
-                        f"private_{user_id}", search_query, settings
-                    )
+                    search_ctx = await run_search(search_scope, search_query, settings)
                     asyncio.create_task(reply_private(websocket, user_id, record_text, vision_image, search_ctx))
 
                 # ===== 群聊消息 ======
@@ -1170,7 +1193,14 @@ async def handler(websocket):
                         log(f"[搜索] 群 {group_id} 收到显式搜索指令，直接响应: {search_query}")
 
                     # @提及无显式指令时与私聊对齐：分模型从自然问句提取时效搜索词
-                    if triggered and not search_query and settings.get("search_enabled", True):
+                    # 冷却前置+问句预检：冷却期内或明显非事实问句时不调分模型
+                    if (
+                        triggered
+                        and not search_query
+                        and settings.get("search_enabled", True)
+                        and not search_cooling(f"group_{group_id}", settings)
+                        and looks_like_factual_query(msg_text)
+                    ):
                         search_query = await extract_search_query_private(
                             f"group_{group_id}_{user_id}", msg_text, label="群@"
                         )
