@@ -998,12 +998,26 @@ async def handler(websocket):
                         f"{nickname}：{record_text}", message_id=mid
                     )
 
+                    # 未触发且仅提及模式：直接跳过，不进冷却也不判定
+                    if not triggered and settings.get("at_only", True):
+                        log(f"[群聊] 群 {group_id} {nickname} 的消息未触发（当前为仅提及模式）")
+                        continue
+
+                    # 频率上限前置：@/喊名字与自动插嘴分开计时，互不占用（@之间仍保冷却防刷屏）
+                    # 冷却期内直接跳过，连判定（分模型调用/掷骰）都不做，省算力
+                    now = time.time()
+                    if triggered:
+                        cooldown = settings.get("reply_cooldown_at", REPLY_COOLDOWN_AT)
+                        rate_key = f"group_{group_id}_at"
+                    else:
+                        cooldown = settings.get("reply_cooldown", REPLY_COOLDOWN)
+                        rate_key = f"group_{group_id}"
+                    if now - _last_reply_time.get(rate_key, 0) < cooldown:
+                        log(f"[频率] 群 {group_id} 回复间隔不足 {cooldown:g} 秒，已跳过")
+                        continue
+
                     # 触发判定：@ 或喊名字直接触发，否则自主潜水模式下按 infer 设置分流
                     if not triggered:
-                        at_only = settings.get("at_only", True)
-                        if at_only:
-                            log(f"[群聊] 群 {group_id} {nickname} 的消息未触发（当前为仅提及模式）")
-                            continue
                         infer_mode = settings.get("infer_mode", "AI")
                         if infer_mode == "PY":
                             # 概率掷骰
@@ -1021,17 +1035,6 @@ async def handler(websocket):
                             log(f"[判断] 群 {group_id} 决定参与互动")
 
                     log(f"群 {group_id} 收到 {nickname} 的消息: {msg_text}")
-                    # 频率上限：@/喊名字与自动插嘴分开计时，互不占用（@之间仍保冷却防刷屏）
-                    now = time.time()
-                    if triggered:
-                        cooldown = settings.get("reply_cooldown_at", REPLY_COOLDOWN_AT)
-                        rate_key = f"group_{group_id}_at"
-                    else:
-                        cooldown = settings.get("reply_cooldown", REPLY_COOLDOWN)
-                        rate_key = f"group_{group_id}"
-                    if now - _last_reply_time.get(rate_key, 0) < cooldown:
-                        log(f"[频率] 群 {group_id} 回复间隔不足 {cooldown:g} 秒，已跳过")
-                        continue
                     _last_reply_time[rate_key] = now
                     asyncio.create_task(reply_group(
                         websocket, group_id, f"group_{group_id}_{user_id}", record_text,
