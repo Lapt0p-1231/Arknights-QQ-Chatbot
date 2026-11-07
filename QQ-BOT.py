@@ -3,6 +3,7 @@ import base64
 import json
 import random
 import re
+import sys
 import time
 from collections import deque
 import websockets
@@ -12,6 +13,14 @@ import part_command
 import part_prompt
 import part_api
 import os
+
+# Windows 控制台默认 GBK，打印 emoji 会直接 UnicodeEncodeError 干崩主循环
+# 强制 UTF-8 + 容错替换，print 永远安全
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # ===== 机器人QQ ======
 # 通过环境变量配置，避免把个人账号写进源码
@@ -153,6 +162,26 @@ def naturalize_chat_text(text):
     text = re.sub(r"\n{2,}", "\n", text)
     return text.strip("，, ")
 # ====================
+
+# ===== 拒答检测辅助 ======
+# 词表保留备用，恢复时在 call_your_api 里加回 is_refusal_text 判断即可。
+_REFUSAL_MARKERS = (
+    "安全准则", "安全策略", "内容政策", "内容准则", "安全指南",
+    "作为AI", "作为人工智能", "作为语言模型",
+    "不能协助", "无法满足", "不适宜的内容",
+    "safety guideline", "content policy", "safety constraints",
+    "I cannot", "I can't", "cannot fulfill", "can't fulfill",
+    "I'm unable", "I am unable", "unable to fulfill",
+    "cannot assist", "can't assist", "must decline",
+    "against my guidelines", "sexually explicit",
+)
+
+def is_refusal_text(text):
+    if not isinstance(text, str):
+        return False
+    return any(marker in text for marker in _REFUSAL_MARKERS)
+# ====================
+
 
 # ===== 掉线告警 =======
 SERVER_CHAN_KEY = os.environ.get("QQ_BOT_SERVER_CHAN_KEY", "")
@@ -338,7 +367,7 @@ def build_user_prompt(user_id, memory, query=None, recall_scopes=None):
                     )
                 log(f"[RAG] 用户 {user_id} 召回了 {len(recalled)} 条记忆")
 
-    print(f"[系统] 用户 {user_id} 本次提示词长度: {len(active_prompt)} 字符")
+    log(f"[系统] 用户 {user_id} 本次提示词长度: {len(active_prompt)} 字符")
     return active_prompt
 # =====================
 
@@ -355,7 +384,15 @@ async def _post_json(payload, api_url=None, api_key=None):
     async with aiohttp.ClientSession() as session:
         async with session.post(api_url, json=payload, headers=headers) as resp:
             data = await resp.json()
-            return data["choices"][0]["message"]["content"]
+            if "choices" not in data:
+                # 上游报错（限流/参数不支持等）：带状态码和原文抛出，避免裸 KeyError
+                raise RuntimeError(f"API返回异常 status={resp.status} body={json.dumps(data, ensure_ascii=False)[:300]}")
+            choice = data["choices"][0]
+            content = (choice.get("message") or {}).get("content")
+            if content is None:
+                # 安全拦截/空生成时 content 为 null，记下来方便排查拒答
+                log(f"[API] 模型返回空内容 finish_reason={choice.get('finish_reason')}")
+            return content
 
 
 # ====== 识图 ======
@@ -389,10 +426,10 @@ async def vision_caption(data_uri):
         "stream": False,
     }
     try:
-        caption = (await asyncio.wait_for(
+        caption = ((await asyncio.wait_for(
             _post_json(payload, api_url=route.get("url"), api_key=route.get("key")),
             timeout=30
-        )).strip()
+        )) or "").strip()
         caption = re.sub(r"\s+", " ", caption)[:60]
         log(f"[识图] 图片描述: {caption}")
         return caption
@@ -401,16 +438,19 @@ async def vision_caption(data_uri):
         return ""
 
 
-async def prepare_vision(image_url, is_meme, settings):
+async def prepare_vision(image_url, is_meme, settings, sender_is_admin=True):
     """返回 (record_tag, data_uri)。record_tag 是写进历史的文本替身，如 [图片：xxx]。"""
     if not settings.get("vision_enabled", True):
         return ("[表情包]" if is_meme else "[图片]"), None
-    if is_meme:
-        prob = float(settings.get("vision_meme_probability", 30))
+    if settings.get("vision_admin_only", False) and not sender_is_admin:
+        return ("[表情包]" if is_meme else "[图片]"), None
+    prob = float(settings.get("vision_meme_probability", 30)) if is_meme \
+        else float(settings.get("vision_probability", 100))
+    if prob < 100:
         roll = random.random() * 100
         if roll >= prob:
-            log(f"[识图] 表情包掷出 {roll:.1f} >= {prob:g}%，跳过识别")
-            return "[表情包]", None
+            log(f"[识图] {'表情包' if is_meme else '图片'}掷出 {roll:.1f} >= {prob:g}%，跳过识别")
+            return ("[表情包]" if is_meme else "[图片]"), None
     data_uri = await fetch_image_b64(image_url)
     if not data_uri:
         return ("[表情包]" if is_meme else "[图片]"), None
@@ -718,6 +758,10 @@ async def call_your_api(user_id, message, group_id=None, image=None):
     try:
         reply = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
         reply = strip_trailing_period(clean_reply_format(reply))
+        if not reply:
+            # 模型拒答/空回复：静默跳过，不入库不发送，避免 None 污染历史
+            log(f"[回复] 模型返回空内容（可能被安全策略拦截），本条跳过 user={user_id}")
+            return None
 
         if group_id is not None:
             # 群聊：回复写入群共享档案，同时记录发送者的个人聊天线（好感度要靠它算）
@@ -744,8 +788,9 @@ async def call_your_api(user_id, message, group_id=None, image=None):
         return reply
 
     except Exception as e:
-        print(f"[错误] 调用API失败: {e}")
-        return f"[错误] 发生错误：{e}"
+        # API 异常静默跳过：错误文本绝不发进群/私聊，避免"发生错误"刷屏
+        log(f"[错误] 调用API失败 user={user_id}: {e}")
+        return None
 # =====================
 
 
@@ -753,6 +798,8 @@ async def call_your_api(user_id, message, group_id=None, image=None):
 async def reply_private(websocket, user_id, msg_text, image=None):
     try:
         reply = await call_your_api(user_id, msg_text, image=image)
+        if reply is None or reply.startswith("[错误]"):
+            return
         await part_command.send_private(websocket, user_id, reply)
         log(f"[回复] 已回复私聊 {user_id}: {reply[:50]}")
         await summarize_memory(str(user_id))
@@ -763,6 +810,8 @@ async def reply_private(websocket, user_id, msg_text, image=None):
 async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None):
     try:
         reply = await call_your_api(mem_key, msg_text, group_id=group_id, image=image)
+        if reply is None or reply.startswith("[错误]"):
+            return
         # 引用判断：目标消息距今超过阈值条才引用，避免每条都挂引用
         quote = None
         if reply_to is not None:
@@ -872,7 +921,7 @@ async def handler(websocket):
                     # 识图：被冷却跳过的消息不做识别，省调用
                     record_text, vision_image = msg_text.strip(), None
                     if image_url:
-                        tag, vision_image = await prepare_vision(image_url, image_is_meme, settings)
+                        tag, vision_image = await prepare_vision(image_url, image_is_meme, settings, admin)
                         record_text = (record_text + tag).strip()
                     if quoted_id:
                         quoted = await resolve_quoted_text(websocket, str(user_id), quoted_id)
@@ -938,7 +987,7 @@ async def handler(websocket):
                     # 闲聊消息写入群共享上下文（识图 caption / 引用原文一并写入，后续消息才能看懂语境）
                     record_text, vision_image = msg_text.strip(), None
                     if image_url:
-                        tag, vision_image = await prepare_vision(image_url, image_is_meme, settings)
+                        tag, vision_image = await prepare_vision(image_url, image_is_meme, settings, admin)
                         record_text = (record_text + tag).strip()
                     if quoted_id:
                         quoted = await resolve_quoted_text(websocket, f"group_{group_id}", quoted_id)
@@ -1059,9 +1108,9 @@ async def musing_task():
                         ],
                         "stream": False
                     }
-                    musing = (await asyncio.wait_for(
+                    musing = ((await asyncio.wait_for(
                         _post_json(payload, api_url=route.get("url"), api_key=route.get("key")), timeout=MUSING_TIMEOUT
-                    )).strip()
+                    )) or "").strip()
                     if musing:
                         await asyncio.to_thread(
                             part_record.add_vector, uid, musing, "musing",

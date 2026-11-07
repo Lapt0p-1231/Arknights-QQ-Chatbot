@@ -222,21 +222,23 @@ def recall(scopes, query, top_k=3, min_importance=0.0, min_similarity=0.0):
         items = []
         for doc_id, doc in zip(ids, docs):
             imp, mtype = imp_map.get(doc_id, (0.5, "dialogue"))
+            sim = sims.get(doc_id, 0.0)
             if imp < min_importance:
                 continue
-            if sims.get(doc_id, 0.0) < min_similarity:
+            if sim < min_similarity:
                 continue
-            items.append((imp, mtype, doc))
-        # 真实对话优先，发散产物最多召回1条（梦境不能挤掉事实）
-        items.sort(key=lambda x: (x[1] == "musing", -x[0]))
+            items.append((imp, sim, mtype, doc))
+        # 相关性优先：相似度为主、重要度只加权微调（重要度不再盖过相似度）
+        # 发散产物最多召回1条（梦境不能挤掉事实）
+        items.sort(key=lambda x: (x[2] == "musing", -(x[1] * 0.7 + x[0] * 0.3)))
         kept, musing_seen = [], 0
         for item in items:
-            if item[1] == "musing":
+            if item[2] == "musing":
                 musing_seen += 1
                 if musing_seen > 1:
                     continue
             kept.append(item)
-        return [(mtype, doc) for _, mtype, doc in kept[:top_k]]
+        return [(mtype, doc) for _, _, mtype, doc in kept[:top_k]]
     except Exception as e:
         log(f"[向量] 召回失败 {scopes}: {e}")
         return []
@@ -707,8 +709,10 @@ DEFAULT_SETTINGS = {
     "hot_context_group": 12,
     # RAG 召回相似度阈值（cosine，0-1，越高越挑剔；低于此值的"回忆"不注入）
     "recall_threshold": 0.55,
-    # 识图：总开关 + 表情包识别概率（%，省钱用；普通图片总是识别）
+    # 识图：总开关 + 仅管理员识别 + 识别概率（%，普通图与表情包分开掷骰，省钱用）
     "vision_enabled": True,
+    "vision_admin_only": False,
+    "vision_probability": 100,
     "vision_meme_probability": 30,
     # 引用回复：目标消息距今超过此条数就引用发送（0=总是引用）
     "quote_threshold": 3,

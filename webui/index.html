@@ -388,6 +388,18 @@ input[type=range]{accent-color:var(--accent);width:100%}
                 <div class="switch" :class="{on:settings.vision_enabled}" @click="saveSettings({vision_enabled:!settings.vision_enabled})"></div>
               </div>
               <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Admin Only</div><div class="hint">仅识别管理员发的图</div></div>
+                <div class="switch" :class="{on:settings.vision_admin_only}" @click="saveSettings({vision_admin_only:!settings.vision_admin_only})"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="grow">
+                  <div class="row between"><span class="label">Image Probability / 普通图片识别概率</span><span class="mono small" style="color:var(--accent)">{{ settings.vision_probability }}%</span></div>
+                  <input type="range" min="0" max="100" step="5" v-model.number="settings.vision_probability" @change="saveSettings({vision_probability:settings.vision_probability})">
+                </div>
+              </div>
+              <div class="divider"></div>
               <div class="row">
                 <div class="grow">
                   <div class="row between"><span class="label">Meme Probability / 表情包识别概率</span><span class="mono small" style="color:var(--accent)">{{ settings.vision_meme_probability }}%</span></div>
@@ -970,7 +982,8 @@ input[type=range]{accent-color:var(--accent);width:100%}
             <table class="plist">
               <thead><tr><th style="width:44px">#</th><th>PROFILE</th><th>ENDPOINT</th><th style="width:170px">KEY</th><th style="width:150px">USED BY</th><th style="width:150px"></th></tr></thead>
               <tbody>
-                <tr v-for="(p,i) in models.profiles" :key="p.id">
+                <template v-for="(p,i) in models.profiles" :key="p.id">
+                <tr>
                   <td class="mono faint">{{ String(i+1).padStart(2,'0') }}</td>
                   <td>
                     <div class="fname">{{ p.name }}</div>
@@ -985,11 +998,33 @@ input[type=range]{accent-color:var(--accent);width:100%}
                   </td>
                   <td>
                     <div class="ops">
+                      <button class="btn sm" :disabled="modelTests[p.id] && modelTests[p.id].loading" @click="testProfile(p)">{{ modelTests[p.id] && modelTests[p.id].loading ? 'TESTING' : 'TEST' }}</button>
                       <button class="btn sm" @click="editProfile(p)">EDIT</button>
                       <button class="btn sm danger" @click="deleteProfile(p)">DEL</button>
                     </div>
                   </td>
                 </tr>
+                <tr v-if="modelTests[p.id] && !modelTests[p.id].loading">
+                  <td colspan="6" style="padding:10px 14px">
+                    <div class="row wrap" style="gap:8px;align-items:center">
+                      <span class="tag" :class="modelTests[p.id].text && modelTests[p.id].text.ok ? 'y' : 'r'">
+                        TEXT {{ modelTests[p.id].text && modelTests[p.id].text.ok ? 'OK' : 'FAIL' }}
+                      </span>
+                      <span v-if="modelTests[p.id].text && modelTests[p.id].text.ok" class="mono small faint">{{ modelTests[p.id].text.latency_ms }}ms · {{ modelTests[p.id].text.reply }}</span>
+                      <span v-if="modelTests[p.id].text && modelTests[p.id].text.note" class="mono small" style="color:var(--accent)">{{ modelTests[p.id].text.note }}</span>
+                      <span v-else class="mono small" style="color:#ff8a80">{{ modelTests[p.id].text ? modelTests[p.id].text.error : '' }}</span>
+                    </div>
+                    <div v-if="modelTests[p.id].vision" class="row wrap" style="gap:8px;align-items:center;margin-top:8px">
+                      <span class="tag" :class="modelTests[p.id].vision.supported ? 'c' : 'r'">
+                        VISION {{ modelTests[p.id].vision.supported ? 'OK' : 'FAIL' }}
+                      </span>
+                      <span v-if="modelTests[p.id].vision.ok" class="mono small faint">{{ modelTests[p.id].vision.latency_ms }}ms · {{ modelTests[p.id].vision.reply }}</span>
+                      <span v-else class="mono small" style="color:#ff8a80">{{ modelTests[p.id].vision.error }}</span>
+                      <span v-if="modelTests[p.id].vision.note" class="mono small" style="color:var(--accent)">{{ modelTests[p.id].vision.note }}</span>
+                    </div>
+                  </td>
+                </tr>
+                </template>
                 <tr v-if="!models.profiles.length"><td colspan="6"><div class="empty">// NO ENDPOINT</div></td></tr>
               </tbody>
             </table>
@@ -1136,6 +1171,7 @@ createApp({
       promptItems: [],
       models: { profiles: [], routes: { main:'', sub:'' } },
       profileForm: { id:null, name:'', url:'', key:'', model:'' },
+      modelTests: {},
       busy: { search:false, embed:false, memory:false, target:false },
       editing: null, creating: null, editingHot: null, editingVec: null,
       toasts: [],
@@ -1518,6 +1554,17 @@ createApp({
       }, role==='main' ? '主模型已切换' : '分模型已切换');
     },
     resetProfileForm(){ this.profileForm = { id:null, name:'', url:'', key:'', model:'' }; },
+    async testProfile(p){
+      if(this.modelTests[p.id] && this.modelTests[p.id].loading) return;
+      this.modelTests[p.id] = { loading:true };
+      try {
+        const r = await this.api('/api/models/test',{method:'POST',body:{id:p.id}});
+        r.loading = false;
+        this.modelTests[p.id] = r;
+      } catch(e){
+        this.modelTests[p.id] = { loading:false, text:{ok:false,error:(e&&e.message)||'请求失败'}, vision:null };
+      }
+    },
     editProfile(p){
       this.profileForm = { id:p.id, name:p.name, url:p.url, key:'', model:p.model };
     },

@@ -4,8 +4,14 @@
 默认地址：http://127.0.0.1:8090
 """
 import asyncio
+import base64
+import json
 import os
+import struct
+import time
+import zlib
 
+import aiohttp
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -36,6 +42,8 @@ class SettingsUpdate(BaseModel):
     hot_context_group: int | None = None
     recall_threshold: float | None = None
     vision_enabled: bool | None = None
+    vision_admin_only: bool | None = None
+    vision_probability: float | None = None
     vision_meme_probability: float | None = None
     quote_threshold: int | None = None
 
@@ -163,6 +171,10 @@ class ProfileDelete(BaseModel):
     id: str
 
 
+class ProfileTest(BaseModel):
+    id: str
+
+
 # ====== 工具 ======
 def _safe_prompt_name(name: str) -> str:
     name = os.path.basename(name.strip())
@@ -265,6 +277,13 @@ def update_settings(body: SettingsUpdate):
         cur["recall_threshold"] = value
     if "vision_enabled" in data:
         cur["vision_enabled"] = bool(data["vision_enabled"])
+    if "vision_admin_only" in data:
+        cur["vision_admin_only"] = bool(data["vision_admin_only"])
+    if "vision_probability" in data:
+        value = float(data["vision_probability"])
+        if not 0 <= value <= 100:
+            raise HTTPException(400, "识图概率范围 0-100")
+        cur["vision_probability"] = value
     if "vision_meme_probability" in data:
         value = float(data["vision_meme_probability"])
         if not 0 <= value <= 100:
@@ -731,6 +750,95 @@ def model_profile_save(body: ProfileSave):
 def model_profile_delete(body: ProfileDelete):
     part_api.delete_profile(body.id)
     return _models_payload()
+
+
+_TEST_IMG_URI = None
+
+
+def _test_image_uri():
+    """运行时生成一张 32x32 纯红 PNG（stdlib 手搓，无第三方依赖），用于探测端点视觉能力。"""
+    global _TEST_IMG_URI
+    if _TEST_IMG_URI is None:
+        w = h = 32
+        raw = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
+
+        def chunk(tag, data):
+            return (struct.pack(">I", len(data)) + tag + data
+                    + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+        png = (b"\x89PNG\r\n\x1a\n"
+               + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(raw))
+               + chunk(b"IEND", b""))
+        _TEST_IMG_URI = "data:image/png;base64," + base64.b64encode(png).decode()
+    return _TEST_IMG_URI
+
+
+@app.post("/api/models/test")
+async def model_profile_test(body: ProfileTest):
+    """连通性 + 文本延迟 + 视觉能力三段测试，结果只读不写配置。"""
+    profile = part_api.get_profile(body.id)
+    if not profile:
+        raise HTTPException(404, "没有这个端点")
+    url, key, model = profile.get("url"), profile.get("key"), profile.get("model")
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    async def _probe(messages, timeout):
+        payload = {"model": model, "messages": messages, "stream": False, "max_tokens": 64}
+        start = time.monotonic()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                ) as resp:
+                    raw = await resp.text()
+                    latency = round((time.monotonic() - start) * 1000)
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        return {"ok": False, "latency_ms": latency,
+                                "error": f"HTTP {resp.status}（返回非 JSON，疑似网关错误页）"}
+                    choices = data.get("choices") if isinstance(data, dict) else None
+                    if not choices:
+                        err = data.get("error") if isinstance(data, dict) else None
+                        msg = err.get("message") if isinstance(err, dict) else str(data)[:200]
+                        return {"ok": False, "latency_ms": latency, "error": f"HTTP {resp.status}: {msg}"}
+                    reply = ((choices[0].get("message") or {}).get("content") or "").strip()
+                    return {"ok": True, "latency_ms": latency, "reply": reply[:100]}
+        except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
+            return {"ok": False, "latency_ms": round((time.monotonic() - start) * 1000),
+                    "error": f"超时（{timeout}s 内未响应）"}
+        except Exception as e:
+            return {"ok": False, "latency_ms": round((time.monotonic() - start) * 1000),
+                    "error": str(e)[:200]}
+
+    text_result = await _probe([{"role": "user", "content": "ping，只回复 pong"}], 45)
+    if text_result["ok"] and not text_result.get("reply"):
+        text_result["note"] = "端点响应正常但内容为空（可能为推理模型，token 耗尽于思考）"
+    result = {"text": text_result, "vision": None}
+    if text_result["ok"]:
+        vision = await _probe([{"role": "user", "content": [
+            {"type": "text", "text": "这张图片是什么颜色？只回答颜色名称"},
+            {"type": "image_url", "image_url": {"url": _test_image_uri()}},
+        ]}], 60)
+        if vision["ok"]:
+            reply = vision.get("reply", "")
+            if not reply:
+                vision["supported"] = False
+                vision["note"] = "返回内容为空，无法确认视觉能力"
+            else:
+                negative = any(k in reply for k in ("无法", "不能", "看不到", "没有图", "抱歉", "不支持")) \
+                    or any(k in reply.lower() for k in ("cannot", "unable", "no image", "can't"))
+                vision["supported"] = not negative
+                if not negative and "红" not in reply and "red" not in reply.lower():
+                    vision["note"] = "端点接受了图片但描述与测试图不符，视觉能力存疑"
+        else:
+            vision["supported"] = False
+        result["vision"] = vision
+    return result
 
 
 # ====== 日志 ======
