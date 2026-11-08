@@ -31,6 +31,7 @@ CMD_HELP_TEXT = (
     "/bot del <QQ> - 移除已标注机器人 [仅管理]\n"
     "/bot list - 查看已标注机器人及衰减步长 [仅管理]\n"
     "/bot step <百分比> - 设置连续互动概率衰减步长(0-100) [仅管理]\n"
+    "/poke - 立即触发一次主动搭讪/冒泡测试 [仅管理]\n"
     "/memory reset - 清空聊天记忆 [群聊中仅管理]\n"
     "/cmd help - 查看本指令列表"
 )
@@ -77,6 +78,7 @@ def build_help(admin=False, in_group=False):
             "/bot del <QQ> - 移除已标注机器人",
             "/bot list - 查看已标注机器人及衰减步长",
             "/bot step <百分比> - 设置连续互动概率衰减步长(0-100)",
+            "/poke - 立即触发一次主动搭讪/冒泡测试",
         ]
     lines.append("/cmd help - 查看本指令列表")
     return "\n".join(lines)
@@ -305,8 +307,21 @@ def _handle_bot_cmd(text):
 
 # ===== 私聊指令 ======
 # on_rl: /rl 触发的重新生成回调
-async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
+# on_poke: /poke 触发的主动搭讪测试回调
+async def handle_private_command(websocket, user_id, msg_text, admin, on_rl, on_poke=None):
     text = msg_text.strip()
+
+    # /poke /戳我 /搭讪
+    if text in ("/poke", "/戳我", "/搭讪"):
+        if not admin:
+            reply = "[指令] 仅管理员可用"
+            await send_private(websocket, user_id, reply)
+            return True
+        if on_poke:
+            on_poke()
+        else:
+            await send_private(websocket, user_id, "[指令] 未配置主动搭讪回调")
+        return True
 
     # 表情库查看
     if text in ("/sticker", "/表情"):
@@ -481,9 +496,20 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
 
 
 # ===== 群聊指令 ======
-async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on_rl):
+async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on_rl, on_poke=None):
     text = msg_text.strip()
     mem_key = f"group_{group_id}_{user_id}"
+
+    # /poke /戳我 /冒泡（仅管理员）
+    if text in ("/poke", "/戳我", "/冒泡", "/搭讪"):
+        if not admin:
+            await send_group(websocket, group_id, "[指令] 仅管理员可用")
+            return True
+        if on_poke:
+            on_poke()
+        else:
+            await send_group(websocket, group_id, "[指令] 未配置主动冒泡回调")
+        return True
 
     # 表情库查看
     if text in ("/sticker", "/表情"):

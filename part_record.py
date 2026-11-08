@@ -741,6 +741,14 @@ DEFAULT_SETTINGS = {
     # 机器人防刷软保底：已知其他机器人 QQ 列表 + 连续互动概率步长衰减（从 100% 开始，每轮减去 step%）
     "known_bots": [],
     "bot_decay_step": 25.0,
+    # 主动私聊搭讪系统（双轨：记忆发散睹物思人 + 时态日常碎碎念）
+    "proactive_enabled": False,
+    "proactive_target": "",
+    "proactive_interval_minutes": 180.0,
+    "proactive_probability": 50.0,
+    "proactive_quiet_start": 23,
+    "proactive_quiet_end": 8,
+    "proactive_group_idle_minutes": 30.0,
 }
 
 def load_settings():
@@ -990,6 +998,21 @@ def append_group_history(group_id, role, content, limit=RETAIN_LIMIT, message_id
     finally:
         conn.close()
     sync_archive_index()
+
+
+def get_last_history_info(user_id):
+    """返回该档案最新一条历史消息的 (role, ts)；无记录返回 (None, 0.0)。"""
+    conn = _db()
+    try:
+        row = conn.execute(
+            "SELECT role, ts FROM chat_history WHERE user_id=? ORDER BY ts DESC LIMIT 1",
+            (str(user_id),)
+        ).fetchone()
+        if row:
+            return row[0], float(row[1])
+        return None, 0.0
+    finally:
+        conn.close()
 
 
 # ====== /char set 与 /char clear ======

@@ -219,6 +219,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .logline.error{border-left-color:var(--red);color:#ff8a80;background:rgba(255,59,48,.04)}
 .logline.musing{border-left-color:#8f6b3a;color:#e0c194}
 .logline.bot{border-left-color:#e07a5f;color:#f2cc8f}
+.logline.proactive{border-left-color:#e056fd;color:#f3a683}
 .logline.do{border-left-color:var(--accent);color:#b3e4ff}
 
 /* ---- memory ---- */
@@ -309,7 +310,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.2.1</div>
+      <div>BUILD 2026.11 // v1.3.0</div>
     </div>
   </aside>
 
@@ -591,9 +592,69 @@ input[type=range]{accent-color:var(--accent);width:100%}
             </div>
           </section>
 
+          <!-- proactive messaging -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">07</span><span class="tt">Proactive</span><span class="desc">主动搭讪</span></div>
+            <div class="panel-b">
+              <div class="row between">
+                <div><div class="label">Proactive Messaging</div><div class="hint">主动搭讪总开关</div></div>
+                <div class="switch" :class="{on:settings.proactive_enabled}" @click="saveSettings({proactive_enabled:!settings.proactive_enabled})"></div>
+              </div>
+              <div class="divider"></div>
+              <div>
+                <div class="label" style="margin-bottom:5px">Targets / 目标列表</div>
+                <div class="hint" style="margin-bottom:8px">QQ号 或 group_群号，逗号分隔，留空默认私聊管理员</div>
+                <input type="text" v-model="settings.proactive_target" placeholder="123456789, group_100000000" style="width:100%" @change="saveSettings({proactive_target:settings.proactive_target})">
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <span class="label">Trigger Probability / 触发概率</span>
+                <span class="mono small" style="color:var(--accent)">{{ settings.proactive_probability || 50 }}%</span>
+              </div>
+              <div class="row" style="margin-top:8px">
+                <input type="range" min="0" max="100" step="5" v-model.number="settings.proactive_probability" @change="saveSettings({proactive_probability:settings.proactive_probability})">
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div>
+                  <div class="label">Min Interval / 触发间隔</div>
+                  <div class="hint">两次主动出击的最少间隔时间</div>
+                </div>
+                <div class="row" style="gap:6px;align-items:center">
+                  <input type="number" min="5" max="1440" step="15" v-model.number="settings.proactive_interval_minutes" style="width:90px" @change="saveSettings({proactive_interval_minutes:settings.proactive_interval_minutes})">
+                  <span class="mono faint small">分钟</span>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div>
+                  <div class="label">Quiet Hours / 勿扰时段</div>
+                  <div class="hint">该时间段内静默</div>
+                </div>
+                <div class="row" style="gap:6px;align-items:center">
+                  <input type="number" min="0" max="23" step="1" v-model.number="settings.proactive_quiet_start" style="width:60px" @change="saveSettings({proactive_quiet_start:settings.proactive_quiet_start})">
+                  <span class="mono faint small">:00 ~</span>
+                  <input type="number" min="0" max="23" step="1" v-model.number="settings.proactive_quiet_end" style="width:60px" @change="saveSettings({proactive_quiet_end:settings.proactive_quiet_end})">
+                  <span class="mono faint small">:00</span>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div>
+                  <div class="label">Group Idle Gate / 群冷场门槛</div>
+                  <div class="hint">群内静默多久后允许主动搭讪</div>
+                </div>
+                <div class="row" style="gap:6px;align-items:center">
+                  <input type="number" min="1" max="1440" step="5" v-model.number="settings.proactive_group_idle_minutes" style="width:90px" @change="saveSettings({proactive_group_idle_minutes:settings.proactive_group_idle_minutes})">
+                  <span class="mono faint small">分钟</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- target ops -->
           <section class="panel">
-            <div class="panel-h"><span class="n">07</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
+            <div class="panel-h"><span class="n">08</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
             <div class="panel-b">
               <div class="row">
                 <input type="text" v-model="targetId" placeholder="QQ号 / group_群号 / group_群号_QQ号">
@@ -632,7 +693,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- command reference -->
           <section class="panel">
-            <div class="panel-h"><span class="n">08</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
+            <div class="panel-h"><span class="n">09</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
             <div class="panel-b tight">
               <pre class="mono small" style="padding:16px;white-space:pre-wrap;line-height:1.9;color:#bdbdbd;max-height:470px;overflow:auto">{{ helpText || '// 暂无指令说明' }}</pre>
             </div>
@@ -1318,7 +1379,7 @@ createApp({
       clock: '--:--:--',
       botRunning: false, botPid: null,
       status: { log_active:false, db_size:0, prompt_count:0, enabled_prompt_count:0, bot_qq:'' },
-      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30, known_bots:[], bot_decay_step:25 },
+      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30, known_bots:[], bot_decay_step:25, proactive_enabled:false, proactive_target:'', proactive_interval_minutes:180, proactive_probability:50, proactive_quiet_start:23, proactive_quiet_end:8, proactive_group_idle_minutes:30 },
       stickerStats: { total:0, mface_count:0, image_count:0 },
       musing: { config:{ interval_minutes:120, private_enabled:true, group_enabled:true, min_importance:0.7 }, overrides:{}, scopes:[] },
       musingSel: [], musingSearch: '', musingType: '', bulkInterval: null,
@@ -1335,7 +1396,7 @@ createApp({
       logFilterSet: [], 
       logFilters: [
         {key:'judge',label:'判断'},{key:'reply',label:'回复'},{key:'chat',label:'群聊'},
-        {key:'bot',label:'防刷'},
+        {key:'bot',label:'防刷'},{key:'proactive',label:'主动'},
         {key:'search',label:'搜索'},{key:'quote',label:'引用'},{key:'rag',label:'RAG'},
         {key:'vector',label:'向量'},{key:'memory',label:'记忆'},{key:'freq',label:'频率'},
         {key:'musing',label:'发散'},{key:'sticker',label:'表情'},{key:'error',label:'错误'},
@@ -1497,19 +1558,27 @@ createApp({
       this.saveSettings({name_keywords:list});
     },
     addBotQQ(){
-      const v = (this.newBotQQ || '').trim(); if(!v) return;
+      const v = (this.newBotQQ || '').trim();
+      if(!v) return;
       const clean = v.replace(/\D/g, '');
-      if(!clean) return;
-      const cur = this.settings.known_bots || [];
-      if(cur.includes(clean)) { this.newBotQQ=''; return; }
+      if(!clean){
+        return this.toast('WARN', '请输入纯数字的机器人 QQ 号', true);
+      }
+      const cur = Array.isArray(this.settings.known_bots) ? this.settings.known_bots.map(String) : [];
+      if(cur.includes(clean)) {
+        this.newBotQQ = '';
+        return this.toast('WARN', '该机器人 QQ 已在列表中', true);
+      }
       const list = [...cur, clean];
-      this.newBotQQ='';
+      this.newBotQQ = '';
       this.saveSettings({known_bots:list});
+      this.toast('OK', '已标注机器人 QQ：' + clean);
     },
     removeBotQQ(i){
-      const cur = this.settings.known_bots || [];
+      const cur = Array.isArray(this.settings.known_bots) ? this.settings.known_bots : [];
       const list = cur.filter((_,idx)=>idx!==i);
       this.saveSettings({known_bots:list});
+      this.toast('OK', '已移除已标注机器人');
     },
 
     /* ---- musing ---- */
@@ -1841,6 +1910,7 @@ createApp({
       if(/\[记忆/.test(line)) return 'memory';
       if(/\[频率\]|\[冷却\]|\[去重\]|\[延迟\]/.test(line)) return 'freq';
       if(/\[防刷\]/.test(line)) return 'bot';
+      if(/\[主动\]/.test(line)) return 'proactive';
       if(/\[胡思乱想\]|\[发散\]/.test(line)) return 'musing';
       if(/\[掷骰\]|\[指令\]|\[设置\]/.test(line)) return 'do';
       if(/\[群聊\]|收到私聊消息|群\s*\d+\s*收到/.test(line)) return 'chat';

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import datetime
 import json
 import random
 import re
@@ -48,6 +49,52 @@ REPLY_COOLDOWN = 10
 REPLY_COOLDOWN_AT = 5
 _last_reply_time = {}
 # ====================
+
+# ===== 机器人连续互动防刷（概率步长衰减软保底） =====
+_group_bot_turns = {}
+BOT_INTERACTION_TIMEOUT = 300.0  # 超过5分钟无互动自动清零
+_active_ws = None
+
+def check_bot_interaction(group_id, user_id, settings):
+    """
+    针对已标注的已知机器人检查是否允许回复（固定步长概率衰减软保底）。
+    返回: (allowed: bool, prob: float, current_turns: int)
+    从 100% 开始，第1轮 100%，第2轮 100 - step%，第3轮 100 - 2*step%...
+    """
+    known_bots = set(str(b).strip() for b in settings.get("known_bots", []))
+    if str(user_id) not in known_bots:
+        return True, 100.0, 0
+
+    step = float(settings.get("bot_decay_step", 25.0))
+    now = time.time()
+    state = _group_bot_turns.get(group_id, {"turns": 0, "last_time": 0.0})
+    turns = state.get("turns", 0)
+    if now - state.get("last_time", 0.0) > BOT_INTERACTION_TIMEOUT:
+        turns = 0
+
+    prob = max(0.0, 100.0 - (turns * step))
+    roll = random.random() * 100.0
+    allowed = (roll < prob)
+    return allowed, prob, turns
+
+def record_bot_reply(group_id, user_id, settings):
+    """当真正对已知机器人发出回复时调用，递增连续互动轮数"""
+    known_bots = set(str(b).strip() for b in settings.get("known_bots", []))
+    if str(user_id) in known_bots:
+        now = time.time()
+        state = _group_bot_turns.get(group_id, {"turns": 0, "last_time": 0.0})
+        turns = state.get("turns", 0)
+        if now - state.get("last_time", 0.0) > BOT_INTERACTION_TIMEOUT:
+            turns = 0
+        _group_bot_turns[group_id] = {"turns": turns + 1, "last_time": now}
+
+def reset_bot_turns_if_human(group_id, user_id, settings):
+    """当收到真人群友消息时，立刻重置该群的机器人连续对话轮数"""
+    known_bots = set(str(b).strip() for b in settings.get("known_bots", []))
+    if str(user_id) not in known_bots and str(user_id) != str(BOT_QQ):
+        if group_id in _group_bot_turns and _group_bot_turns[group_id].get("turns", 0) > 0:
+            _group_bot_turns[group_id] = {"turns": 0, "last_time": 0.0}
+# ===================================================
 
 # ===== 消息去重 =======
 _seen_msg_ids = set()
@@ -343,6 +390,30 @@ else:
     print(f"[系统] 提示词模块加载成功，总长度: {len(SYSTEM_PROMPT)} 字符")
 
 
+# 现实时间感知
+def get_current_time_desc():
+    """获取当前时间的拟人自然语言描述，赋予机器人精准的现实时间观念"""
+    now = datetime.datetime.now()
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    weekday = weekdays[now.weekday()]
+    hour = now.hour
+    if 5 <= hour < 9:
+        period = "清晨 / 早晨"
+    elif 9 <= hour < 12:
+        period = "上午"
+    elif 12 <= hour < 14:
+        period = "中午 / 午休时段"
+    elif 14 <= hour < 18:
+        period = "下午 / 工作摸鱼时段"
+    elif 18 <= hour < 20:
+        period = "傍晚 / 晚饭时分"
+    elif 20 <= hour < 23:
+        period = "夜晚 / 休闲时段"
+    else:
+        period = "深夜 / 凌晨入眠时段"
+    return f"{now.strftime('%Y年%m月%d日')} {weekday} {now.strftime('%H:%M')}（{period}）"
+
+
 # 分任务提示词（实时读取）
 def load_internal_prompt(filename):
     return part_prompt.internal_prompt(filename)
@@ -422,6 +493,13 @@ def build_user_prompt(user_id, memory, query=None, recall_scopes=None):
             if state_text:
                 active_prompt += "\n\n# 你当前的状态\n" + state_text
                 print(f"[记忆] 用户 {user_id} 已加载状态记忆")
+
+    # 现实时间感知
+    active_prompt += (
+        f"\n\n# 现实时间感知\n"
+        f"当前时间：{get_current_time_desc()}\n"
+        "（你明确感知当前的具体时刻、星期与时段作息，请让对话自然贴合当下时间，严禁机械报时）"
+    )
 
     # RAG 召回：用语义检索突然想起的往事/胡思乱想
     if query and recall_scopes:
@@ -1136,6 +1214,8 @@ async def _recv_loop(websocket, queue):
 
 
 async def handler(websocket):
+    global _active_ws
+    _active_ws = websocket
     print("实时监控已连接！")
     queue = asyncio.Queue()
     recv_task = create_safe_task(_recv_loop(websocket, queue), "消息接收")
@@ -1209,7 +1289,8 @@ async def handler(websocket):
                     # 先过指令
                     if await part_command.handle_private_command(
                         websocket, user_id, msg_text, admin,
-                        lambda m: create_safe_task(reply_private(websocket, user_id, m), "私聊回复")
+                        lambda m: create_safe_task(reply_private(websocket, user_id, m), "私聊回复"),
+                        on_poke=lambda: create_safe_task(generate_and_send_proactive_message(force=True, specified_user_id=user_id), "主动搭讪测试")
                     ):
                         continue
 
@@ -1263,6 +1344,11 @@ async def handler(websocket):
                     if str(user_id) == str(BOT_QQ):
                         continue
 
+                    # 收到真人群友发言时，立即重置该群的机器人连续对话轮数
+                    reset_bot_turns_if_human(group_id, user_id, settings)
+                    known_bots = set(str(b).strip() for b in settings.get("known_bots", []))
+                    is_from_bot = str(user_id) in known_bots
+
                     is_at_me = False
                     msg_text = ""
                     image_url = None
@@ -1306,10 +1392,17 @@ async def handler(websocket):
 
                     # 指令只在被触发时响应，且不进群共享档案（未@时不处理，防止群友使唤别家bot时乱插嘴）
                     if triggered and msg_text.strip().startswith("/"):
+                        if is_from_bot:
+                            log(f"[指令] 忽略来自已知机器人 {user_id} 的指令: {msg_text.strip()[:30]}")
+                            continue
                         mem_key = f"group_{group_id}_{user_id}"
                         if await part_command.handle_group_command(
                             websocket, group_id, user_id, msg_text, admin,
-                            lambda m: create_safe_task(reply_group(websocket, group_id, mem_key, m), "群聊回复")
+                            lambda m: create_safe_task(reply_group(websocket, group_id, mem_key, m), "群聊回复"),
+                            on_poke=lambda: create_safe_task(
+                                generate_and_send_proactive_message(force=True, specified_group_id=group_id),
+                                "群主动冒泡测试"
+                            )
                         ):
                             continue
 
@@ -1402,6 +1495,14 @@ async def handler(websocket):
                         )
 
                     log(f"群 {group_id} 收到 {nickname} 的消息: {msg_text}")
+                    if is_from_bot:
+                        allowed, prob, current_turns = check_bot_interaction(group_id, user_id, settings)
+                        if not allowed:
+                            log(f"[防刷] 群 {group_id} 对方为已知机器人 {user_id} (连续第{current_turns + 1}轮)，衰减概率 {prob:.1f}%，未通过软保底测试，掐断回复")
+                            continue
+                        log(f"[防刷] 群 {group_id} 对方为已知机器人 {user_id} (连续第{current_turns + 1}轮)，衰减概率 {prob:.1f}%，通过软保底测试，允许回复")
+                        record_bot_reply(group_id, user_id, settings)
+
                     _last_reply_time[rate_key] = now
                     search_ctx = await run_search(f"group_{group_id}", search_query, settings)
                     is_duel = part_sticker.is_incoming_pure_sticker(event) and settings.get("sticker_duel_mode", False)
@@ -1413,8 +1514,257 @@ async def handler(websocket):
         log(f"[错误] 连接断开或发生异常: {e}")
         await send_wechat_alert("死老冯腾讯可能又风控了",f"处理消息时发生异常：{e}")
     finally:
+        _active_ws = None
         recv_task.cancel()
 # =====================
+
+
+# ====== 主动私聊搭讪系统（双轨：记忆发散睹物思人 + 时态日常碎碎念） ======
+_last_proactive_time = 0.0
+
+def is_in_quiet_hours(settings):
+    try:
+        start = int(settings.get("proactive_quiet_start", 23))
+        end = int(settings.get("proactive_quiet_end", 8))
+        now_hour = datetime.datetime.now().hour
+        if start == end:
+            return False
+        if start > end:  # 跨午夜，如 23:00 到 08:00
+            return now_hour >= start or now_hour < end
+        else:            # 当天内，如 12:00 到 14:00
+            return start <= now_hour < end
+    except Exception:
+        return False
+
+def parse_proactive_targets(raw):
+    """解析主动搭讪目标：逗号分隔；纯数字=私聊QQ，group_群号=群聊。"""
+    targets = []
+    seen = set()
+    text = str(raw or "").replace("，", ",").replace("、", ",")
+    for token in text.split(","):
+        t = token.strip()
+        if not t:
+            continue
+        if t.lower().startswith("group_"):
+            gid = t[6:].strip()
+            if gid.isdigit() and ("group", gid) not in seen:
+                seen.add(("group", gid))
+                targets.append(("group", gid))
+        elif t.isdigit():
+            if ("private", t) not in seen:
+                seen.add(("private", t))
+                targets.append(("private", t))
+        else:
+            log(f"[主动] 无法识别的目标格式已忽略: {t}（私聊填QQ，群聊填 group_群号）")
+    return targets
+
+
+async def _proactive_generate_text(settings, kind, memory, memory_scope):
+    """生成一条主动消息文本，返回 (文本, 模式标签)。kind = private / group。"""
+    time_desc = get_current_time_desc()
+    state_mood = (memory.get("state") or {}).get("mood", "")
+    min_imp = safe_float(settings.get("musing_min_importance"), 0.4)
+    memories = await asyncio.to_thread(
+        part_record.get_high_importance_memories, 1, min_imp, memory_scope
+    )
+    use_type_a = bool(memories) and random.random() < 0.5
+    past_memory = memories[0][2] if use_type_a else ""
+
+    memory = dict(memory)
+    if kind == "group":
+        memory["character_prompt"] = ""
+    active_prompt = build_user_prompt(memory_scope, memory)
+
+    if kind == "group":
+        if use_type_a:
+            mode_label = "类型A·群往事发散"
+            instruction = (
+                f"\n\n# 主动群聊冒泡指令（群往事发散型）\n"
+                f"你现在闲着，当前现实时间是 {time_desc}，你突然想起这个群里以前聊过的这件往事：\n"
+                f"【往事】：{past_memory}\n\n"
+                "你决定在群里冒个泡，顺着这件往事自然开启一句（就像群友突然想起旧话题）。\n"
+                "要求：\n"
+                "1. 完全符合你的角色性格口吻，像真实的群聊发言。\n"
+                "2. 严格控制在25字以内。\n"
+                "3. 绝对不要复述往事原文，严禁客服腔，不要机械问好。\n"
+                "4. 只输出要发到群里的那一句话，不要任何解释、标号或内心独白！"
+            )
+        else:
+            mode_label = "类型B·群时态冒泡"
+            instruction = (
+                f"\n\n# 主动群聊冒泡指令（日常时态与情绪碎碎念）\n"
+                f"你现在闲着，当前现实时间是 {time_desc}，群里最近有点冷清，你决定冒个泡。\n"
+                + (f"你当前的心情/状态是：{state_mood}。\n" if state_mood else "")
+                + "要求：\n"
+                "1. 完全符合你的角色性格口吻，像真实群友随手发的一条群消息。\n"
+                "2. 结合当下时间段（早晨、午后摸鱼、晚饭后、深夜等）或无聊发呆的状态，发一句简短的群聊消息（严格25字以内）。\n"
+                "   例如：“这个点群里怎么这么安静”、“（冒泡）下午三点，都起来摸摸鱼啊”、“大半夜的还有夜猫子不睡？”\n"
+                "3. 严禁客服腔，不要像AI助手，不要机械问好。\n"
+                "4. 只输出要发到群里的那一句话，不要任何解释、标号或内心独白！"
+            )
+    else:
+        if use_type_a:
+            mode_label = "类型A·记忆发散"
+            instruction = (
+                f"\n\n# 主动发消息指令（记忆发散型）\n"
+                f"你现在处于空闲状态，当前时间是 {time_desc}，突然回忆起了关于对方的这件往事：\n"
+                f"【往事】：{past_memory}\n\n"
+                "你决定主动给对方发一条私聊（就像朋友突然想起以前聊过的事找对方搭话）。\n"
+                "要求：\n"
+                "1. 必须完全符合你的角色性格口吻，语气自然随性，就像微信/QQ真实聊天。\n"
+                "2. 顺着这件往事开启一句简短的新私聊（严格控制在25字以内）。\n"
+                "   例如：“突然想起来，上次你提过的那家店叫什么来着？”、“今天听歌莫名想起来你之前推荐的那首了”。\n"
+                "3. 绝对不要复述往事原文，严禁客服腔，不要机械问好。\n"
+                "4. 只输出要发给对方的那句话，不要输出任何多余的解释、标号或内心独白！"
+            )
+        else:
+            mode_label = "类型B·时态情绪"
+            instruction = (
+                f"\n\n# 主动发消息指令（日常时态与情绪碎碎念）\n"
+                f"你现在闲下来了，当前现实时间是：{time_desc}。\n"
+                + (f"你当前的心情/状态是：{state_mood}。\n" if state_mood else "")
+                + "你决定主动在QQ私聊给对方发一句简短的搭讪、碎碎念或戳一戳（就像关系不错的朋友在无聊或特定时段随手发一句）。\n"
+                "要求：\n"
+                "1. 必须完全符合你的角色性格口吻（傲娇/慵懒/天才奸商等，自然流露）。\n"
+                "2. 结合当下的真实时间段（早晨、午后摸鱼、晚饭后、深夜等）或当下无聊发呆的状态，发一句简短的私聊（严格控制在25字以内）。\n"
+                "   例如：“（戳了戳）好无聊啊，你今天很忙吗？”、“下午三点……有点犯困，你在干嘛呢”、“这个点居然还在工作？别猝死了”。\n"
+                "3. 严禁客服腔，不要像AI助手，就像真实QQ好友随手敲出的一句话。\n"
+                "4. 只输出要发给对方的那句话，不要输出任何多余的解释、标号或内心独白！"
+            )
+
+    route = part_api.get_route("main")
+    messages = [{"role": "system", "content": active_prompt + instruction}]
+    for msg in memory.get("chat_history", [])[-12:]:
+        if isinstance(msg, dict) and msg.get("content"):
+            messages.append({"role": msg.get("role", "user"), "content": msg.get("content")})
+    messages.append({"role": "user", "content": "请输出你要发出去的这一句话："})
+
+    payload = {
+        "model": route.get("model") or MAIN_MODEL,
+        "messages": messages,
+        "stream": False
+    }
+    raw = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
+    text = strip_trailing_period(clean_reply_format(raw or ""))
+    if len(text) > 60:
+        text = text[:50]
+    return text, mode_label, state_mood
+
+
+async def _send_proactive_private(settings, target_qq, force):
+    memory = await asyncio.to_thread(
+        part_record.load_user_memory, str(target_qq), settings.get("hot_context_private", 30)
+    )
+    text, mode_label, mood = await _proactive_generate_text(settings, "private", memory, str(target_qq))
+    if not text:
+        return "生成内容为空"
+    clean_text, sticker_seg = await part_sticker.process_reply_stickers(
+        text, f"private_{target_qq}", settings, mood=mood
+    )
+    if clean_text.strip():
+        await part_command.send_private(_active_ws, target_qq, clean_text)
+        log(f"[主动] 已主动向私聊 {target_qq} 发送 ({mode_label}): {clean_text}")
+    if sticker_seg:
+        await send_sticker_message(_active_ws, sticker_seg, f"私聊 {target_qq}", user_id=target_qq)
+    # 写入热记忆，保证对方回复时对话连贯
+    fresh = await asyncio.to_thread(part_record.load_user_memory, str(target_qq))
+    ctx = fresh.get("chat_history", [])
+    ctx.append({"role": "assistant", "content": clean_text or text})
+    fresh["chat_history"] = ctx[-200:]
+    await asyncio.to_thread(part_record.save_user_memory, str(target_qq), fresh)
+    log(f"[主动] 已将主动消息写入私聊 {target_qq} 的热记忆上下文")
+    return f"已发送({mode_label}): {clean_text}"
+
+
+async def _send_proactive_group(settings, group_id, force):
+    if not force:
+        last_role, last_ts = await asyncio.to_thread(
+            part_record.get_last_history_info, f"group_{group_id}"
+        )
+        idle_min = float(settings.get("proactive_group_idle_minutes", 30.0))
+        if last_ts and (time.time() - last_ts) < idle_min * 60:
+            return f"群内仍活跃(需静默{idle_min:g}分钟)"
+        if last_role == "assistant":
+            return "上一条是自己发言，跳过防自言自语"
+    memory = await asyncio.to_thread(
+        part_record.load_user_memory, f"group_{group_id}", settings.get("hot_context_group", 12)
+    )
+    text, mode_label, mood = await _proactive_generate_text(settings, "group", memory, f"group_{group_id}")
+    if not text:
+        return "生成内容为空"
+    clean_text, sticker_seg = await part_sticker.process_reply_stickers(
+        text, f"group_{group_id}", settings, mood=mood
+    )
+    if clean_text.strip():
+        await part_command.send_group(_active_ws, group_id, clean_text)
+        log(f"[主动] 已主动向群 {group_id} 冒泡 ({mode_label}): {clean_text}")
+    if sticker_seg:
+        await send_sticker_message(_active_ws, sticker_seg, f"群 {group_id}", group_id=group_id)
+    # 写入群共享历史，群友接话时可顺畅延续
+    await asyncio.to_thread(
+        part_record.append_group_history, group_id, "assistant", clean_text or text
+    )
+    log(f"[主动] 已将主动冒泡写入群 {group_id} 的共享历史")
+    return f"已发送({mode_label}): {clean_text}"
+
+
+async def generate_and_send_proactive_message(force=False, specified_user_id=None, specified_group_id=None):
+    """
+    主动搭讪系统（双轨：记忆发散 + 时态自发），支持私聊与群聊多目标。
+    force=True 用于管理员指令/调试即时测试，绕过勿扰、频率与群活跃检查。
+    """
+    global _last_proactive_time
+    if not _active_ws:
+        return "WebSocket 客户端未连接，无法发送"
+
+    settings = await asyncio.to_thread(part_record.load_settings)
+    if not force and not settings.get("proactive_enabled", False):
+        return "未开启"
+
+    now = time.time()
+    interval = float(settings.get("proactive_interval_minutes", 180.0)) * 60.0
+
+    if not force:
+        if (now - _last_proactive_time) < interval:
+            return "冷却中"
+        if is_in_quiet_hours(settings):
+            return "勿扰时段"
+
+    if specified_user_id:
+        targets = [("private", str(specified_user_id))]
+    elif specified_group_id:
+        targets = [("group", str(specified_group_id))]
+    else:
+        targets = parse_proactive_targets(settings.get("proactive_target", ""))
+        if not targets and ADMIN_QQ:
+            targets = [("private", str(ADMIN_QQ[0]))]
+    if not targets:
+        return "未指定目标（私聊填QQ，群聊填 group_群号，逗号分隔）"
+
+    if not force:
+        prob = float(settings.get("proactive_probability", 50.0))
+        roll = random.random() * 100.0
+        if roll >= prob:
+            _last_proactive_time = now
+            log(f"[主动] 本轮掷出 {roll:.1f}% >= {prob:g}%，跳过主动搭讪")
+            return "掷骰未命中"
+
+    _last_proactive_time = now
+    log(f"[主动] 触发主动搭讪流程，目标: {', '.join(f'{k}:{t}' for k, t in targets)}")
+
+    results = []
+    for kind, target in targets:
+        try:
+            if kind == "private":
+                r = await _send_proactive_private(settings, target, force)
+            else:
+                r = await _send_proactive_group(settings, target, force)
+            results.append(f"{target}->{r}")
+        except Exception as e:
+            log(f"[主动] 目标 {kind}:{target} 处理异常: {e}")
+            results.append(f"{target}->异常:{e}")
+    return "; ".join(results)
+
 
 
 # ====== 胡思乱想 ======
@@ -1429,6 +1779,12 @@ async def musing_task():
     while True:
         try:
             await asyncio.sleep(MUSING_TICK if backoff == 60 else backoff)
+
+            # 周期性主动私聊搭讪检查
+            try:
+                await generate_and_send_proactive_message(force=False)
+            except Exception as pe:
+                log(f"[主动] 调度检查异常: {pe}")
             musing_prompt = load_internal_prompt("11_胡思乱想.txt")
             if not musing_prompt:
                 log("[胡思乱想] 提示词已被关闭，跳过本轮")

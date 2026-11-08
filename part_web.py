@@ -66,6 +66,13 @@ class SettingsUpdate(BaseModel):
     sticker_capture_probability: float | None = None
     known_bots: list[str | int] | None = None
     bot_decay_step: float | None = None
+    proactive_enabled: bool | None = None
+    proactive_target: str | None = None
+    proactive_interval_minutes: float | None = None
+    proactive_probability: float | None = None
+    proactive_quiet_start: int | None = None
+    proactive_quiet_end: int | None = None
+    proactive_group_idle_minutes: float | None = None
 
 
 class MusingConfig(BaseModel):
@@ -471,6 +478,35 @@ def update_settings(body: SettingsUpdate):
         if not 0 <= value <= 100:
             raise HTTPException(400, "衰减步长范围 0-100")
         cur["bot_decay_step"] = value
+    if "proactive_enabled" in data:
+        cur["proactive_enabled"] = bool(data["proactive_enabled"])
+    if "proactive_target" in data:
+        cur["proactive_target"] = str(data["proactive_target"]).strip()
+    if "proactive_interval_minutes" in data:
+        val = float(data["proactive_interval_minutes"])
+        if not 5 <= val <= 1440:
+            raise HTTPException(400, "主动间隔范围 5-1440 分钟")
+        cur["proactive_interval_minutes"] = val
+    if "proactive_probability" in data:
+        val = float(data["proactive_probability"])
+        if not 0 <= val <= 100:
+            raise HTTPException(400, "主动触发概率范围 0-100%")
+        cur["proactive_probability"] = val
+    if "proactive_quiet_start" in data:
+        val = int(data["proactive_quiet_start"])
+        if not 0 <= val <= 23:
+            raise HTTPException(400, "勿扰起始时间 0-23")
+        cur["proactive_quiet_start"] = val
+    if "proactive_quiet_end" in data:
+        val = int(data["proactive_quiet_end"])
+        if not 0 <= val <= 23:
+            raise HTTPException(400, "勿扰结束时间 0-23")
+        cur["proactive_quiet_end"] = val
+    if "proactive_group_idle_minutes" in data:
+        val = float(data["proactive_group_idle_minutes"])
+        if not 1 <= val <= 1440:
+            raise HTTPException(400, "群冷场门槛范围 1-1440 分钟")
+        cur["proactive_group_idle_minutes"] = val
     part_record.save_settings(cur)
     return cur
 
