@@ -139,6 +139,11 @@ class TargetModeUpdate(BaseModel):
     mode: str | None = None
 
 
+class TargetAtOnlyUpdate(BaseModel):
+    user_id: str
+    at_only: bool | None = None
+
+
 class MemoryClear(BaseModel):
     user_id: str
     group_id: str | None = None
@@ -704,7 +709,8 @@ def profile(user_id: str):
     memory = part_record.load_user_memory(user_id)
     return {
         "user_id": user_id,
-        "mode": memory.get("mode", "扮演"),
+        "mode": memory.get("mode"),
+        "at_only": memory.get("at_only"),
         "favorability": memory.get("favorability"),
         "fitness": memory.get("fitness"),
         "state": memory.get("state", {}),
@@ -726,6 +732,12 @@ def set_target_mode(body: TargetModeUpdate):
         mode = None
     saved = part_record.set_user_mode(body.user_id.strip(), mode)
     return {"user_id": body.user_id, "mode": saved}
+
+
+@app.post("/api/target/at_only")
+def set_target_at_only(body: TargetAtOnlyUpdate):
+    saved = part_record.set_archive_at_only(body.user_id.strip(), body.at_only)
+    return {"user_id": body.user_id, "at_only": saved}
 
 
 @app.post("/api/target/character")

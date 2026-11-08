@@ -381,6 +381,7 @@ def list_archives():
                 "qq": qq,
                 "display_name": data.get("display_name", ""),
                 "mode": data.get("mode"),
+                "at_only": data.get("at_only"),
                 "fitness": data.get("fitness"),
                 "favorability": data.get("favorability"),
                 "history_count": h_count,
@@ -843,6 +844,7 @@ _DEFAULT_PROFILE = {
     "user_persona": "",
     "fitness": None,
     "mode": None,
+    "at_only": None,
     "favorability": None,
     "state": {},
     "long_term": "",
@@ -1074,6 +1076,25 @@ def set_user_mode(user_id, mode):
     save_user_memory(user_id, memory)
     print(f"[模式] 档案 {user_id} 回复模式设为 {memory['mode'] or '跟随全局'}")
     return memory["mode"]
+
+
+def set_archive_at_only(user_id, at_only):
+    """设置指定群档案的触发方式；at_only 为 None 表示跟随全局。"""
+    memory = load_user_memory(user_id)
+    memory["at_only"] = None if at_only is None else bool(at_only)
+    save_user_memory(user_id, memory)
+    label = "跟随全局" if memory["at_only"] is None else ("仅提及" if memory["at_only"] else "自主互动")
+    print(f"[触发] 档案 {user_id} 触发方式设为 {label}")
+    return memory["at_only"]
+
+
+def effective_at_only(settings, scope):
+    """取某档案的有效触发方式：档案覆盖优先，否则用全局默认。"""
+    try:
+        override = load_user_memory(scope).get("at_only")
+    except Exception:
+        override = None
+    return bool(settings.get("at_only", True)) if override is None else bool(override)
 
 # ====== /memory reset ======
 # 只清记忆（对话/状态/好感度），保留人设和参数

@@ -310,7 +310,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.3.1</div>
+      <div>BUILD 2026.11 // v1.3.2</div>
     </div>
   </aside>
 
@@ -346,7 +346,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
             <div class="panel-h"><span class="n">01</span><span class="tt">System</span><span class="desc">全局行为</span></div>
             <div class="panel-b">
               <div class="row between">
-                <div><div class="label">At Only Mode</div><div class="hint">提及模式</div></div>
+                <div><div class="label">At Only Mode</div><div class="hint">默认触发方式（群可在档案汇总页单独覆盖）</div></div>
                 <div class="switch" :class="{on:settings.at_only}" @click="toggleAtOnly"></div>
               </div>
               <div class="divider"></div>
@@ -365,7 +365,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider"></div>
               <div class="row between">
-                <div><div class="label">Global Reply Mode</div><div class="hint">全局回复模式</div></div>
+                <div><div class="label">Default Reply Mode</div><div class="hint">默认回复模式（未单独设置的群/私聊才跟随）</div></div>
                 <div class="seg">
                   <button :class="{on:settings.default_mode==='扮演'}" @click="saveSettings({default_mode:'扮演'})">扮演</button>
                   <button :class="{on:settings.default_mode==='聊天'}" @click="saveSettings({default_mode:'聊天'})">聊天</button>
@@ -552,7 +552,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
               <div class="divider"></div>
               <div class="kv">
                 <div class="k">MODE</div><div class="v">{{ settings.at_only ? '仅提及触发（AT ONLY）' : '自主互动（' + settings.infer_mode + '）' }}</div>
-                <div class="k">REPLY</div><div class="v">全局 {{ settings.default_mode || '扮演' }} 模式</div>
+                <div class="k">REPLY</div><div class="v">默认 {{ settings.default_mode || '扮演' }} 模式（群可按档案单独设置）</div>
                 <div class="k">COOLDOWN</div><div class="v">自动 {{ settings.reply_cooldown }}s / 提及 {{ settings.reply_cooldown_at }}s</div>
                 <div class="k">DELAY</div><div class="v">{{ settings.reply_delay_min }}s ~ {{ settings.reply_delay_max }}s</div>
                 <div class="k">PROB</div><div class="v">{{ settings.dive_probability }}%</div>
@@ -659,6 +659,23 @@ input[type=range]{accent-color:var(--accent);width:100%}
               <div class="row">
                 <input type="text" v-model="targetId" placeholder="QQ号 / group_群号 / group_群号_QQ号">
                 <button class="btn" @click="loadTarget">LOAD</button>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Reply Mode / 回复模式</div><div class="hint">仅对本档案生效，群/私聊通用</div></div>
+                <select :value="profile.mode || ''" style="width:120px" @change="setTargetMode($event.target.value)">
+                  <option value="">跟随全局</option>
+                  <option value="扮演">扮演</option>
+                  <option value="聊天">聊天</option>
+                </select>
+              </div>
+              <div class="row between" v-if="targetId.trim().startsWith('group_')">
+                <div><div class="label">Trigger / 触发方式</div><div class="hint">仅群聊生效</div></div>
+                <select :value="profile.at_only === true ? 'at' : (profile.at_only === false ? 'auto' : '')" style="width:120px" @change="setTargetAtOnly($event.target.value)">
+                  <option value="">跟随全局</option>
+                  <option value="at">仅提及</option>
+                  <option value="auto">自主互动</option>
+                </select>
               </div>
               <div class="divider"></div>
               <div class="row">
@@ -991,6 +1008,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
               <thead><tr>
                 <th style="width:36px"><input type="checkbox" :checked="allArchiveSelected" @change="selectAllArchives($event.target.checked)"></th>
                 <th>ARCHIVE</th><th style="width:80px">TYPE</th><th style="width:150px">NAME</th>
+                <th style="width:120px">MODE</th><th style="width:120px">TRIGGER</th>
                 <th style="width:70px">HIST</th><th style="width:70px">VEC</th><th style="width:130px">LAST</th>
                 <th style="width:70px"></th>
               </tr></thead>
@@ -1003,12 +1021,30 @@ input[type=range]{accent-color:var(--accent);width:100%}
                   </td>
                   <td><span class="tag" :class="a.type==='group'?'c':(a.type==='member'?'':'y')">{{ typeLabel(a.type) }}</span></td>
                   <td class="small">{{ a.display_name || '—' }}</td>
+                  <td>
+                    <select v-if="a.type==='group' || a.type==='private'" :value="a.mode || ''" style="width:110px"
+                      @change="setArchiveMode(a, $event.target.value)">
+                      <option value="">跟随全局</option>
+                      <option value="扮演">扮演</option>
+                      <option value="聊天">聊天</option>
+                    </select>
+                    <span v-else class="faint small">—</span>
+                  </td>
+                  <td>
+                    <select v-if="a.type==='group'" :value="a.at_only === true ? 'at' : (a.at_only === false ? 'auto' : '')" style="width:110px"
+                      @change="setArchiveAtOnly(a, $event.target.value)">
+                      <option value="">跟随全局</option>
+                      <option value="at">仅提及</option>
+                      <option value="auto">自主互动</option>
+                    </select>
+                    <span v-else class="faint small">—</span>
+                  </td>
                   <td class="mono">{{ a.history_count }}</td>
                   <td class="mono" style="color:var(--accent)">{{ a.vector_count }}</td>
                   <td class="mono faint small">{{ timeStr(a.last_active) }}</td>
                   <td><button class="btn sm danger" @click="deleteOneArchive(a.user_id)">DEL</button></td>
                 </tr>
-                <tr v-if="!filteredArchives.length"><td colspan="8"><div class="empty">// NO ARCHIVE</div></td></tr>
+                <tr v-if="!filteredArchives.length"><td colspan="10"><div class="empty">// NO ARCHIVE</div></td></tr>
               </tbody>
             </table>
           </div>
@@ -1706,6 +1742,19 @@ createApp({
         await this.loadMusing();
       }, '已删除 ' + uid);
     },
+    async setArchiveMode(a, mode){
+      await this.guard(async()=>{
+        const r = await this.api('/api/target/mode',{method:'POST',body:{user_id:a.user_id, mode: mode || null}});
+        a.mode = r.mode;
+      }, a.user_id + ' 模式：' + (mode || '跟随全局'));
+    },
+    async setArchiveAtOnly(a, val){
+      const v = val === 'at' ? true : (val === 'auto' ? false : null);
+      await this.guard(async()=>{
+        const r = await this.api('/api/target/at_only',{method:'POST',body:{user_id:a.user_id, at_only:v}});
+        a.at_only = r.at_only;
+      }, a.user_id + ' 触发：' + (v === null ? '跟随全局' : (v ? '仅提及' : '自主互动')));
+    },
     typeLabel(t){ return t==='private' ? '私聊' : (t==='group' ? '群聊' : (t==='member' ? '群友' : t)); },
 
     /* ---- target ops ---- */
@@ -1724,6 +1773,21 @@ createApp({
         const r = await this.api('/api/favor',{method:'POST',body:{user_id:this.targetId.trim(),value:this.favorValue}});
         this.profile.favorability = r.favorability;
       }, '好感度已更新');
+    },
+    async setTargetMode(mode){
+      if(!this.targetId.trim()) return this.toast('WARN','请先 LOAD 档案',true);
+      await this.guard(async()=>{
+        const r = await this.api('/api/target/mode',{method:'POST',body:{user_id:this.targetId.trim(), mode: mode || null}});
+        this.profile.mode = r.mode;
+      }, '回复模式：' + (mode || '跟随全局'));
+    },
+    async setTargetAtOnly(val){
+      if(!this.targetId.trim()) return this.toast('WARN','请先 LOAD 档案',true);
+      const v = val === 'at' ? true : (val === 'auto' ? false : null);
+      await this.guard(async()=>{
+        const r = await this.api('/api/target/at_only',{method:'POST',body:{user_id:this.targetId.trim(), at_only:v}});
+        this.profile.at_only = r.at_only;
+      }, '触发方式：' + (v === null ? '跟随全局' : (v ? '仅提及' : '自主互动')));
     },
     async saveChar(){
       await this.guard(()=>this.api('/api/target/character',{method:'POST',body:{user_id:this.targetId.trim(),text:this.charText}}), '专属人格已保存');

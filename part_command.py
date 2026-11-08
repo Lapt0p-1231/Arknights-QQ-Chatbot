@@ -16,7 +16,7 @@ CMD_HELP_TEXT = (
     "/user set <用户人设> - 设置用户信息\n"
     "/user clear - 清除用户信息\n"
     "/mdchange - 切换回复模式 [群聊仅管理]\n"
-    "/atswitch - 切换触发方式 [仅管理]\n"
+    "/atswitch - 切换触发方式（群内切本群，私聊切全局默认）[仅管理]\n"
     "/cd set <秒数> - 设置自动回复冷却 [仅管理]\n"
     "/atcd set <秒数> - 设置被@回复冷却 [仅管理]）\n"
     "/faver set <QQ号> <数值> - 设置好感度 [仅管理]\n"
@@ -403,13 +403,13 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl, on_
             on_rl(last_msg)
         return True
 
-    # /atswitch（仅管理员）
+    # /atswitch（仅管理员）—— 私聊里切换全局默认触发方式
     if text == "/atswitch":
         if not admin:
             reply = "[指令] 仅管理员可用"
         else:
             at_only = part_record.toggle_at_only()
-            reply = f"[指令] 群聊触发方式已切换为：{'仅提及' if at_only else '自主互动'}"
+            reply = f"[指令] 全局默认触发方式已切换为：{'仅提及' if at_only else '自主互动'}（群可单独覆盖）"
         await send_private(websocket, user_id, reply)
         return True
 
@@ -589,13 +589,17 @@ async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on
         await send_group(websocket, group_id, reply)
         return True
 
-    # /atswitch（仅管理员）
+    # /atswitch（仅管理员）—— 群内切换本群的触发方式覆盖
     if text == "/atswitch":
         if not admin:
             reply = "[指令] 仅管理员可用"
         else:
-            at_only = part_record.toggle_at_only()
-            reply = f"[指令] 群聊触发方式已切换为：{'仅提及' if at_only else '自主互动'}"
+            scope = f"group_{group_id}"
+            settings = part_record.load_settings()
+            cur = part_record.effective_at_only(settings, scope)
+            new_val = not cur
+            part_record.set_archive_at_only(scope, new_val)
+            reply = f"[指令] 本群触发方式已切换为：{'仅提及' if new_val else '自主互动'}"
         await send_group(websocket, group_id, reply)
         return True
 

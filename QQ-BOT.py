@@ -1348,6 +1348,10 @@ async def handler(websocket):
                     reset_bot_turns_if_human(group_id, user_id, settings)
                     known_bots = set(str(b).strip() for b in settings.get("known_bots", []))
                     is_from_bot = str(user_id) in known_bots
+                    # 触发方式按群独立：群档案覆盖优先，否则跟随全局
+                    at_only = await asyncio.to_thread(
+                        part_record.effective_at_only, settings, f"group_{group_id}"
+                    )
 
                     is_at_me = False
                     msg_text = ""
@@ -1451,14 +1455,14 @@ async def handler(websocket):
                     # 显式搜索指令（搜一下xxx）：必须在被触发（@或喊名字）或自主互动模式下才响应
                     # 仅提及模式下未被 @/喊名字 绝对不触发，防止群友使唤别家 bot（"搜一下/查一下"）时横插一嘴
                     search_query = None
-                    if triggered or not settings.get("at_only", True):
+                    if triggered or not at_only:
                         search_query = extract_explicit_query(
                             msg_text, settings.get("search_explicit_cmd_enabled", True)
                         )
 
                     # 未触发且仅提及模式：直接跳过，不进冷却也不判定
-                    if not triggered and settings.get("at_only", True):
-                        log(f"[群聊] 群 {group_id} {nickname} 的消息未触发（当前为仅提及模式）")
+                    if not triggered and at_only:
+                        log(f"[群聊] 群 {group_id} {nickname} 的消息未触发（本群为仅提及模式）")
                         continue
 
                     # 冷却期内直接跳过，连判定（分模型调用/掷骰）都不做，省算力
