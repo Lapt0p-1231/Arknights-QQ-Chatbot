@@ -55,6 +55,15 @@ class SettingsUpdate(BaseModel):
     quote_threshold: int | None = None
     reply_delay_min: float | None = None
     reply_delay_max: float | None = None
+    sticker_enabled: bool | None = None
+    sticker_mode: str | None = None
+    sticker_probability: float | None = None
+    sticker_cooldown: float | None = None
+    sticker_duel_mode: bool | None = None
+    sticker_capture_only: bool | None = None
+    sticker_capture_enabled: bool | None = None
+    sticker_capture_admin_only: bool | None = None
+    sticker_capture_probability: float | None = None
 
 
 class MusingConfig(BaseModel):
@@ -422,8 +431,44 @@ def update_settings(body: SettingsUpdate):
     if "name_keywords" in data:
         names = [n.strip() for n in data["name_keywords"] if n.strip()]
         cur["name_keywords"] = names
+    if "sticker_enabled" in data:
+        cur["sticker_enabled"] = bool(data["sticker_enabled"])
+    if "sticker_mode" in data:
+        smode = str(data["sticker_mode"]).upper()
+        if smode not in ("AI", "PY"):
+            raise HTTPException(400, "表情触发模式只能是 AI 或 PY")
+        cur["sticker_mode"] = smode
+    if "sticker_probability" in data:
+        value = float(data["sticker_probability"])
+        if not 0 <= value <= 100:
+            raise HTTPException(400, "表情附带概率范围 0-100")
+        cur["sticker_probability"] = value
+    if "sticker_cooldown" in data:
+        value = float(data["sticker_cooldown"])
+        if not 0 <= value <= 3600:
+            raise HTTPException(400, "表情冷却范围 0-3600 秒")
+        cur["sticker_cooldown"] = value
+    if "sticker_duel_mode" in data:
+        cur["sticker_duel_mode"] = bool(data["sticker_duel_mode"])
+    if "sticker_capture_only" in data:
+        cur["sticker_capture_only"] = bool(data["sticker_capture_only"])
+    if "sticker_capture_enabled" in data:
+        cur["sticker_capture_enabled"] = bool(data["sticker_capture_enabled"])
+    if "sticker_capture_admin_only" in data:
+        cur["sticker_capture_admin_only"] = bool(data["sticker_capture_admin_only"])
+    if "sticker_capture_probability" in data:
+        value = float(data["sticker_capture_probability"])
+        if not 0 <= value <= 100:
+            raise HTTPException(400, "抓取概率范围 0-100")
+        cur["sticker_capture_probability"] = value
     part_record.save_settings(cur)
     return cur
+
+
+@app.get("/api/stickers/stats")
+async def sticker_stats():
+    import part_sticker
+    return await part_sticker.get_sticker_stats()
 
 
 @app.get("/api/help")

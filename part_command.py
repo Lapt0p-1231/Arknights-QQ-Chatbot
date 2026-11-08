@@ -1,12 +1,14 @@
 import json
 import re
 import part_record
+import part_sticker
 
 
 # ====== 指令列表 ======
 # WebUI 指令速查展示用（完整版）
 CMD_HELP_TEXT = (
     "[指令列表]\n"
+    "/表情 - 查看公共表情库收录统计\n"
     "/rl - 重新生成上一条回复\n"
     "/char set <角色设定> - 设置专属人格 [仅私聊]\n"
     "/char clear - 清除专属人格 [仅私聊]\n"
@@ -21,6 +23,10 @@ CMD_HELP_TEXT = (
     "/name set <名字1> <名字2>... - 设置提名列表 [仅管理]\n"
     "/infer set <AI/PY> - 设置判回方式：AI/概率 [仅管理]\n"
     "/pro set <概率> - 设置掷骰概率 [仅管理]\n"
+    "/smode set <AI/PY> - 设置表情触发方式 [仅管理]\n"
+    "/spro set <概率> - 设置表情附带概率 [仅管理]\n"
+    "/scd set <秒数> - 设置表情冷却时间 [仅管理]\n"
+    "/斗图 - 开关斗图恶搞模式 [仅管理]\n"
     "/memory reset - 清空聊天记忆 [群聊中仅管理]\n"
     "/cmd help - 查看本指令列表"
 )
@@ -59,6 +65,10 @@ def build_help(admin=False, in_group=False):
             "/name set <名字1> <名字2>... - 设置提名列表",
             "/infer set <AI/PY> - 设置判回方式：AI/概率",
             "/pro set <概率> - 设置掷骰概率",
+            "/smode set <AI/PY> - 设置表情触发方式",
+            "/spro set <概率> - 设置表情附带概率",
+            "/scd set <秒数> - 设置表情冷却时间",
+            "/斗图 - 开关斗图恶搞模式",
         ]
     lines.append("/cmd help - 查看本指令列表")
     return "\n".join(lines)
@@ -77,10 +87,13 @@ async def send_private(websocket, user_id, message):
 
 async def send_group(websocket, group_id, message, reply_to=None):
     if reply_to:
-        message = [
-            {"type": "reply", "data": {"id": str(reply_to)}},
-            {"type": "text", "data": {"text": str(message)}},
-        ]
+        if isinstance(message, list):
+            message = [{"type": "reply", "data": {"id": str(reply_to)}}] + message
+        else:
+            message = [
+                {"type": "reply", "data": {"id": str(reply_to)}},
+                {"type": "text", "data": {"text": str(message)}},
+            ]
     action = {
         "action": "send_group_msg",
         "params": {"group_id": group_id, "message": message},
@@ -164,10 +177,73 @@ def _parse_proset(text):
     return "[指令] 请使用格式：/pro set <概率>"
 
 
+# ===== 表情包指令解析 =====
+def _parse_smodeset(text):
+    parts = text.split()
+    if len(parts) == 3 and parts[2].upper() in ("AI", "PY"):
+        mode = parts[2].upper()
+        part_record.set_sticker_setting("sticker_mode", mode)
+        label = "AI自主标签" if mode == "AI" else "概率附带"
+        return f"[指令] 表情触发模式已切换为：{label}"
+    return "[指令] 请使用格式：/smode set <AI/PY>"
+
+
+def _parse_sproset(text):
+    parts = text.split()
+    if len(parts) == 3:
+        try:
+            val = float(parts[2])
+            if 0 <= val <= 100:
+                part_record.set_sticker_setting("sticker_probability", val)
+                return f"[指令] 表情附带概率已设置为 {val:g}%"
+            return "[指令] 参数范围：0 - 100"
+        except ValueError:
+            pass
+    return "[指令] 请使用格式：/spro set <百分比(0-100)>"
+
+
+def _parse_scdset(text):
+    parts = text.split()
+    if len(parts) == 3:
+        try:
+            val = float(parts[2])
+            if 0 <= val <= 3600:
+                part_record.set_sticker_setting("sticker_cooldown", val)
+                return f"[指令] 表情冷却时间已设置为 {val:g} 秒"
+            return "[指令] 参数范围：0 - 3600 秒"
+        except ValueError:
+            pass
+    return "[指令] 请使用格式：/scd set <秒数>"
+
+
+def _toggle_duel():
+    cur = part_record.load_settings()
+    new_val = not cur.get("sticker_duel_mode", False)
+    part_record.set_sticker_setting("sticker_duel_mode", new_val)
+    return f"[指令] 斗图恶搞模式已{'开启（收到表情只回表情对线）' if new_val else '关闭'}"
+
+
+def _format_sticker_stats(stats: dict) -> str:
+    lines = [f"[表情库] 当前公共库共收录 {stats.get('total', 0)} 个表情：\n- 商城大表情：{stats.get('mface_count', 0)} 个\n- 收藏图片表情：{stats.get('image_count', 0)} 张"]
+    cats = stats.get("categories", {})
+    if cats:
+        cat_items = [f"{k}: {v}" for k, v in cats.items() if v > 0]
+        if cat_items:
+            lines.append("【各分类图片】" + " | ".join(cat_items))
+    return "\n".join(lines)
+
+
 # ===== 私聊指令 ======
 # on_rl: /rl 触发的重新生成回调
 async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
     text = msg_text.strip()
+
+    # 表情库查看
+    if text in ("/sticker", "/表情"):
+        stats = await part_sticker.get_sticker_stats()
+        reply = _format_sticker_stats(stats)
+        await send_private(websocket, user_id, reply)
+        return True
 
     # /memory reset
     if text == "/memory reset":
@@ -299,6 +375,27 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
         await send_private(websocket, user_id, reply)
         return True
 
+    # 表情包管理指令（仅管理员）
+    if text.startswith("/smode set"):
+        reply = "[指令] 仅管理员可用" if not admin else _parse_smodeset(text)
+        await send_private(websocket, user_id, reply)
+        return True
+
+    if text.startswith("/spro set"):
+        reply = "[指令] 仅管理员可用" if not admin else _parse_sproset(text)
+        await send_private(websocket, user_id, reply)
+        return True
+
+    if text.startswith("/scd set"):
+        reply = "[指令] 仅管理员可用" if not admin else _parse_scdset(text)
+        await send_private(websocket, user_id, reply)
+        return True
+
+    if text in ("/斗图", "/duel"):
+        reply = "[指令] 仅管理员可用" if not admin else _toggle_duel()
+        await send_private(websocket, user_id, reply)
+        return True
+
     # /cmd help
     if text == "/cmd help":
         await send_private(websocket, user_id, build_help(admin=admin, in_group=False))
@@ -311,6 +408,13 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
 async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on_rl):
     text = msg_text.strip()
     mem_key = f"group_{group_id}_{user_id}"
+
+    # 表情库查看
+    if text in ("/sticker", "/表情"):
+        stats = await part_sticker.get_sticker_stats()
+        reply = _format_sticker_stats(stats)
+        await send_group(websocket, group_id, reply)
+        return True
 
     # /rl
     if text == "/rl":
@@ -437,6 +541,27 @@ async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on
     # /pro set（仅管理员）
     if text.startswith("/pro set"):
         reply = "[指令] 仅管理员可用" if not admin else _parse_proset(text)
+        await send_group(websocket, group_id, reply)
+        return True
+
+    # 表情包管理指令（仅管理员）
+    if text.startswith("/smode set"):
+        reply = "[指令] 仅管理员可用" if not admin else _parse_smodeset(text)
+        await send_group(websocket, group_id, reply)
+        return True
+
+    if text.startswith("/spro set"):
+        reply = "[指令] 仅管理员可用" if not admin else _parse_sproset(text)
+        await send_group(websocket, group_id, reply)
+        return True
+
+    if text.startswith("/scd set"):
+        reply = "[指令] 仅管理员可用" if not admin else _parse_scdset(text)
+        await send_group(websocket, group_id, reply)
+        return True
+
+    if text in ("/斗图", "/duel"):
+        reply = "[指令] 仅管理员可用" if not admin else _toggle_duel()
         await send_group(websocket, group_id, reply)
         return True
 

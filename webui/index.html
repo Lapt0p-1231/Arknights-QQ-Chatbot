@@ -159,9 +159,9 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
 .switch{
   width:42px;height:20px;background:#1a2330;border:1px solid var(--line2);cursor:pointer;
-  position:relative;transition:.18s;flex-shrink:0;
+  position:relative;transition:all .25s ease;flex-shrink:0;user-select:none;
 }
-.switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;background:#5b6b7d;transition:.18s}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;background:#5b6b7d;transition:left .25s ease, background .25s ease}
 .switch.on{background:var(--accent-dim);border-color:var(--accent)}
 .switch.on::after{left:24px;background:var(--accent)}
 
@@ -308,7 +308,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.1.1</div>
+      <div>BUILD 2026.11 // v1.2.0</div>
     </div>
   </aside>
 
@@ -411,12 +411,12 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider"></div>
               <div class="row between">
-                <div><div class="label">Explicit Command</div><div class="hint">显式搜索指令（"搜一下/帮我查"等；关闭后仅 AI 判回提取搜索词）</div></div>
+                <div><div class="label">Explicit Command</div><div class="hint">显式搜索指令（"搜一下/帮我查"等；关闭后仅 AI 判回）</div></div>
                 <div class="switch" :class="{on:settings.search_explicit_cmd_enabled}" @click="saveSettings({search_explicit_cmd_enabled:!settings.search_explicit_cmd_enabled})"></div>
               </div>
               <div class="divider"></div>
               <div class="row between">
-                <div><div class="label">Search Cooldown</div><div class="hint">搜索冷却（秒，按群/私聊独立计）</div></div>
+                <div><div class="label">Search Cooldown</div><div class="hint">搜索冷却</div></div>
                 <input type="number" min="0" max="86400" step="10" v-model.number="settings.search_cooldown" style="width:90px" @change="saveSettings({search_cooldown:settings.search_cooldown})">
               </div>
               <div class="divider"></div>
@@ -426,7 +426,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider"></div>
               <div class="hint" style="line-height:1.6">
-                <b>检索链路</b>：Tavily（配置 Key 时优先）→ Jina s.jina.ai（LLM 友好正文）→ cn.bing.com（兜底）。未配置 Key 时全程免 Key 零成本。
+                <b>检索链路</b>：Tavily > Jina > 必应
               </div>
             </div>
           </section>
@@ -441,7 +441,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider"></div>
               <div class="row between">
-                <div><div class="label">Admin Only</div><div class="hint">仅识别管理员发的图</div></div>
+                <div><div class="label">Admin Only</div><div class="hint">仅识别管理员</div></div>
                 <div class="switch" :class="{on:settings.vision_admin_only}" @click="saveSettings({vision_admin_only:!settings.vision_admin_only})"></div>
               </div>
               <div class="divider"></div>
@@ -461,9 +461,80 @@ input[type=range]{accent-color:var(--accent);width:100%}
             </div>
           </section>
 
+          <!-- stickers -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">04</span><span class="tt">Stickers</span><span class="desc">表情包发布</span></div>
+            <div class="panel-b">
+              <div class="row between">
+                <div><div class="label">Sticker Feature</div><div class="hint">表情包总开关</div></div>
+                <div class="switch" :class="{on:settings.sticker_enabled}" @click="saveSettings({sticker_enabled:!settings.sticker_enabled})"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Trigger Mode</div><div class="hint">发布判别</div></div>
+                <div class="seg">
+                  <button :class="{on:settings.sticker_mode==='AI'}" @click="saveSettings({sticker_mode:'AI'})">AI</button>
+                  <button :class="{on:settings.sticker_mode==='PY'}" @click="saveSettings({sticker_mode:'PY'})">PY</button>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row" v-if="settings.sticker_mode==='PY'">
+                <div class="grow">
+                  <div class="row between"><span class="label">Attach Probability / 表情附带概率 (PY模式)</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_probability }}%</span></div>
+                  <input type="range" min="0" max="100" step="5" v-model.number="settings.sticker_probability" @change="saveSettings({sticker_probability:settings.sticker_probability})">
+                </div>
+              </div>
+              <div class="divider" v-if="settings.sticker_mode==='PY'"></div>
+              <div class="row">
+                <div class="grow">
+                  <div class="row between"><span class="label">Sticker Cooldown / 表情发送冷却</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_cooldown }}s</span></div>
+                  <input type="range" min="0" max="300" step="5" v-model.number="settings.sticker_cooldown" @change="saveSettings({sticker_cooldown:settings.sticker_cooldown})">
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Meme Duel Mode / 斗图模式</div><div class="hint">放弃文字，准备战斗！</div></div>
+                <div class="switch" :class="{on:settings.sticker_duel_mode}" @click="saveSettings({sticker_duel_mode:!settings.sticker_duel_mode})"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label" style="color:#e0af68">Capture-Only / 纯捕获模式</div><div class="hint">开启后不回复任何消息，仅后台静默抓取表情，方便大量喂图</div></div>
+                <div class="switch" :class="{on:settings.sticker_capture_only}" @click="saveSettings({sticker_capture_only:!settings.sticker_capture_only})"></div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Auto Capture / 总抓取开关</div><div class="hint">是否自动抓取收到的表情包入库</div></div>
+                <div class="switch" :class="{on:settings.sticker_capture_enabled}" @click="saveSettings({sticker_capture_enabled:!settings.sticker_capture_enabled})"></div>
+              </div>
+              <div class="divider" v-if="settings.sticker_capture_enabled"></div>
+              <div class="row between" v-if="settings.sticker_capture_enabled">
+                <div><div class="label">Admin Only / 仅抓取管理员</div><div class="hint">只抓取管理员发的表情，防止群友刷屏污染库</div></div>
+                <div class="switch" :class="{on:settings.sticker_capture_admin_only}" @click="saveSettings({sticker_capture_admin_only:!settings.sticker_capture_admin_only})"></div>
+              </div>
+              <div class="divider" v-if="settings.sticker_capture_enabled && !settings.sticker_capture_admin_only"></div>
+              <div class="row" v-if="settings.sticker_capture_enabled && !settings.sticker_capture_admin_only">
+                <div class="grow">
+                  <div class="row between"><span class="label">Capture Probability / 概率抓取</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_capture_probability }}%</span></div>
+                  <input type="range" min="0" max="100" step="5" v-model.number="settings.sticker_capture_probability" @change="saveSettings({sticker_capture_probability:settings.sticker_capture_probability})">
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="kv">
+                <div class="k">STORAGE</div><div class="v">公共库共收录 {{ (stickerStats && stickerStats.total) || 0 }} 个表情</div>
+                <div class="k">BREAKDOWN</div><div class="v">商城大表情 {{ (stickerStats && stickerStats.mface_count) || 0 }} 个 / 收藏图片 {{ (stickerStats && stickerStats.image_count) || 0 }} 张</div>
+                <div class="k" v-if="stickerStats && stickerStats.categories">CATEGORIES</div>
+                <div class="v small faint" v-if="stickerStats && stickerStats.categories" style="line-height:1.6">
+                  <span v-for="(cnt, folder) in stickerStats.categories" :key="folder" style="display:inline-block;margin-right:8px;background:rgba(255,255,255,0.05);padding:1px 6px;border-radius:3px">
+                    {{ folder }}: <b style="color:var(--accent)">{{ cnt }}</b>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- keywords -->
           <section class="panel">
-            <div class="panel-h"><span class="n">04</span><span class="tt">Triggers</span><span class="desc">提名列表</span></div>
+            <div class="panel-h"><span class="n">05</span><span class="tt">Triggers</span><span class="desc">提名列表</span></div>
             <div class="panel-b">
               <div class="hint" style="margin-bottom:10px">群聊中出现以下任意一个词后视作被提及</div>
               <div class="row wrap" style="gap:6px">
@@ -489,7 +560,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- target ops -->
           <section class="panel">
-            <div class="panel-h"><span class="n">05</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
+            <div class="panel-h"><span class="n">06</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
             <div class="panel-b">
               <div class="row">
                 <input type="text" v-model="targetId" placeholder="QQ号 / group_群号 / group_群号_QQ号">
@@ -528,7 +599,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- command reference -->
           <section class="panel">
-            <div class="panel-h"><span class="n">06</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
+            <div class="panel-h"><span class="n">07</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
             <div class="panel-b tight">
               <pre class="mono small" style="padding:16px;white-space:pre-wrap;line-height:1.9;color:#bdbdbd;max-height:470px;overflow:auto">{{ helpText || '// 暂无指令说明' }}</pre>
             </div>
@@ -1214,7 +1285,8 @@ createApp({
       clock: '--:--:--',
       botRunning: false, botPid: null,
       status: { log_active:false, db_size:0, prompt_count:0, enabled_prompt_count:0, bot_qq:'' },
-      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3 },
+      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30 },
+      stickerStats: { total:0, mface_count:0, image_count:0 },
       musing: { config:{ interval_minutes:120, private_enabled:true, group_enabled:true, min_importance:0.7 }, overrides:{}, scopes:[] },
       musingSel: [], musingSearch: '', musingType: '', bulkInterval: null,
       archives: [], archiveSel: [], archiveSearch: '', archiveType: '',
@@ -1231,7 +1303,7 @@ createApp({
         {key:'judge',label:'判断'},{key:'reply',label:'回复'},{key:'chat',label:'群聊'},
         {key:'search',label:'搜索'},{key:'quote',label:'引用'},{key:'rag',label:'RAG'},
         {key:'vector',label:'向量'},{key:'memory',label:'记忆'},{key:'freq',label:'频率'},
-        {key:'musing',label:'发散'},{key:'error',label:'错误'},
+        {key:'musing',label:'发散'},{key:'sticker',label:'表情'},{key:'error',label:'错误'},
       ],
       promptItems: [],
       models: { profiles: [], routes: { main:'', sub:'' } },
@@ -1353,10 +1425,26 @@ createApp({
         }
       }, isShutdown ? '机器人已关机' : '机器人已重启');
     },
-    async loadSettings(){ try { this.settings = await this.api('/api/settings'); } catch(e){} },
+    async loadSettings(){
+      try {
+        this.settings = await this.api('/api/settings');
+        this.stickerStats = await this.api('/api/stickers/stats');
+      } catch(e){}
+    },
     async loadHelp(){ try { this.helpText = (await this.api('/api/help')).text; } catch(e){} },
     async saveSettings(patch){
-      await this.guard(async()=>{ this.settings = await this.api('/api/settings',{method:'POST',body:patch}); }, '设置已保存');
+      // 乐观更新：点击瞬间先切换本地状态，让 UI 立刻响应动画，不用等服务器返回
+      Object.assign(this.settings, patch);
+      await this.guard(async()=>{
+        const res = await this.api('/api/settings',{method:'POST',body:patch});
+        this.settings = res;
+        // 检测后端是否真的保存了该字段（防止旧版本后端吞字段导致状态回滚抽搐）
+        for (const k in patch) {
+          if (res[k] !== patch[k] && typeof patch[k] !== 'object') {
+            console.warn(`[设置同步警告] 后端返回的 ${k}=${res[k]} 与请求的 ${patch[k]} 不一致，可能是后端未重启或未支持该字段`);
+          }
+        }
+      }, '设置已保存');
     },
     async toggleAtOnly(){
       await this.guard(async()=>{ this.settings = await this.api('/api/settings',{method:'POST',body:{at_only:!this.settings.at_only}}); },
@@ -1692,6 +1780,7 @@ createApp({
     /* ---- logs ---- */
     logClass(line){
       if(/\[错误\]|Traceback|Exception|失败/.test(line)) return 'error';
+      if(/\[表情\]/.test(line)) return 'sticker';
       if(/\[判断\]/.test(line)) return 'judge';
       if(/\[回复\]/.test(line)) return 'reply';
       if(/\[搜索\]/.test(line)) return 'search';

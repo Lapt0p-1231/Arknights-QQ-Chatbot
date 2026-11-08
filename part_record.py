@@ -728,6 +728,16 @@ DEFAULT_SETTINGS = {
     "quote_threshold": 3,
     # 单档案覆盖：{"QQ号": {"enabled": true, "interval_minutes": 30}, "group_xxx": {...}}
     "musing_overrides": {},
+    # 表情包决策与附带设置
+    "sticker_enabled": True,
+    "sticker_mode": "AI",
+    "sticker_probability": 25.0,
+    "sticker_cooldown": 20.0,
+    "sticker_duel_mode": False,
+    "sticker_capture_only": False,
+    "sticker_capture_enabled": True,
+    "sticker_capture_admin_only": True,
+    "sticker_capture_probability": 30.0,
 }
 
 def load_settings():
@@ -806,6 +816,14 @@ def set_dive_probability(probability):
     save_settings(settings)
     print(f"[设置] 潜水插嘴概率已设置为 {probability:g}%")
     return probability
+
+
+# ====== 表情包设置 ======
+def set_sticker_setting(key, value):
+    settings = load_settings()
+    settings[key] = value
+    save_settings(settings)
+    return settings
 
 
 # ======== 档案读写（SQLite） ========
