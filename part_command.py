@@ -27,6 +27,10 @@ CMD_HELP_TEXT = (
     "/spro set <概率> - 设置表情附带概率 [仅管理]\n"
     "/scd set <秒数> - 设置表情冷却时间 [仅管理]\n"
     "/斗图 - 开关斗图恶搞模式 [仅管理]\n"
+    "/bot add <QQ> - 标注群内其他机器人QQ [仅管理]\n"
+    "/bot del <QQ> - 移除已标注机器人 [仅管理]\n"
+    "/bot list - 查看已标注机器人及衰减步长 [仅管理]\n"
+    "/bot step <百分比> - 设置连续互动概率衰减步长(0-100) [仅管理]\n"
     "/memory reset - 清空聊天记忆 [群聊中仅管理]\n"
     "/cmd help - 查看本指令列表"
 )
@@ -69,6 +73,10 @@ def build_help(admin=False, in_group=False):
             "/spro set <概率> - 设置表情附带概率",
             "/scd set <秒数> - 设置表情冷却时间",
             "/斗图 - 开关斗图恶搞模式",
+            "/bot add <QQ> - 标注群内其他机器人QQ",
+            "/bot del <QQ> - 移除已标注机器人",
+            "/bot list - 查看已标注机器人及衰减步长",
+            "/bot step <百分比> - 设置连续互动概率衰减步长(0-100)",
         ]
     lines.append("/cmd help - 查看本指令列表")
     return "\n".join(lines)
@@ -233,6 +241,68 @@ def _format_sticker_stats(stats: dict) -> str:
     return "\n".join(lines)
 
 
+# ===== 机器人防刷管理指令 =====
+def _handle_bot_cmd(text):
+    parts = text.split()
+    cur = part_record.load_settings()
+    known_bots = [str(b).strip() for b in cur.get("known_bots", []) if str(b).strip()]
+    decay_step = float(cur.get("bot_decay_step", 25.0))
+
+    if len(parts) >= 2 and parts[1] == "list":
+        if not known_bots:
+            return f"[机器人防刷] 暂未标注任何机器人\n衰减步长: {decay_step:g}%\n提示: 可使用 /bot add <QQ> 标注"
+        bots_str = "\n".join(f"- {b}" for b in known_bots)
+        ladder = ["第1轮 100%"]
+        cur_p = 100.0 - decay_step
+        r = 2
+        while cur_p > 0 and r <= 6:
+            ladder.append(f"第{r}轮 {cur_p:g}%")
+            cur_p -= decay_step
+            r += 1
+        if cur_p <= 0:
+            ladder.append(f"第{r}轮起 0%(掐断)")
+        return f"[机器人防刷列表]\n{bots_str}\n衰减步长: {decay_step:g}%\n衰减阶梯: {' -> '.join(ladder)}"
+
+    if len(parts) == 3 and parts[1] == "add":
+        qq = parts[2].strip()
+        m = re.search(r"\d+", qq)
+        if not m:
+            return "[指令] 请输入有效的 QQ 号，格式：/bot add <QQ>"
+        bot_qq = m.group(0)
+        if bot_qq in known_bots:
+            return f"[指令] 机器人 {bot_qq} 已在列表中"
+        known_bots.append(bot_qq)
+        cur["known_bots"] = known_bots
+        part_record.save_settings(cur)
+        return f"[指令] 已成功标注机器人 QQ：{bot_qq}"
+
+    if len(parts) == 3 and parts[1] in ("del", "remove", "rm"):
+        qq = parts[2].strip()
+        m = re.search(r"\d+", qq)
+        if not m:
+            return "[指令] 请输入有效的 QQ 号，格式：/bot del <QQ>"
+        bot_qq = m.group(0)
+        if bot_qq not in known_bots:
+            return f"[指令] 列表中未找到机器人 {bot_qq}"
+        known_bots = [b for b in known_bots if b != bot_qq]
+        cur["known_bots"] = known_bots
+        part_record.save_settings(cur)
+        return f"[指令] 已移除机器人 QQ：{bot_qq}"
+
+    if len(parts) == 3 and parts[1] == "step":
+        try:
+            val = float(parts[2])
+            if not 0 <= val <= 100:
+                return "[指令] 衰减步长范围为 0 - 100（百分比）"
+            cur["bot_decay_step"] = val
+            part_record.save_settings(cur)
+            return f"[指令] 机器人互动衰减步长已设置为 {val:g}%"
+        except ValueError:
+            return "[指令] 请输入有效的数字，格式：/bot step <百分比>"
+
+    return "[指令] 机器人防刷指令格式：\n/bot list\n/bot add <QQ>\n/bot del <QQ>\n/bot step <百分比>"
+
+
 # ===== 私聊指令 ======
 # on_rl: /rl 触发的重新生成回调
 async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
@@ -393,6 +463,12 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl):
 
     if text in ("/斗图", "/duel"):
         reply = "[指令] 仅管理员可用" if not admin else _toggle_duel()
+        await send_private(websocket, user_id, reply)
+        return True
+
+    # /bot（仅管理员）
+    if text.startswith("/bot"):
+        reply = "[指令] 仅管理员可用" if not admin else _handle_bot_cmd(text)
         await send_private(websocket, user_id, reply)
         return True
 
@@ -562,6 +638,12 @@ async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on
 
     if text in ("/斗图", "/duel"):
         reply = "[指令] 仅管理员可用" if not admin else _toggle_duel()
+        await send_group(websocket, group_id, reply)
+        return True
+
+    # /bot（仅管理员）
+    if text.startswith("/bot"):
+        reply = "[指令] 仅管理员可用" if not admin else _handle_bot_cmd(text)
         await send_group(websocket, group_id, reply)
         return True
 

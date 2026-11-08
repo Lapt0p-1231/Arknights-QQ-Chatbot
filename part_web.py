@@ -64,6 +64,8 @@ class SettingsUpdate(BaseModel):
     sticker_capture_enabled: bool | None = None
     sticker_capture_admin_only: bool | None = None
     sticker_capture_probability: float | None = None
+    known_bots: list[str | int] | None = None
+    bot_decay_step: float | None = None
 
 
 class MusingConfig(BaseModel):
@@ -461,6 +463,14 @@ def update_settings(body: SettingsUpdate):
         if not 0 <= value <= 100:
             raise HTTPException(400, "抓取概率范围 0-100")
         cur["sticker_capture_probability"] = value
+    if "known_bots" in data:
+        bots = [str(b).strip() for b in data["known_bots"] if str(b).strip()]
+        cur["known_bots"] = list(dict.fromkeys(bots))
+    if "bot_decay_step" in data:
+        value = float(data["bot_decay_step"])
+        if not 0 <= value <= 100:
+            raise HTTPException(400, "衰减步长范围 0-100")
+        cur["bot_decay_step"] = value
     part_record.save_settings(cur)
     return cur
 

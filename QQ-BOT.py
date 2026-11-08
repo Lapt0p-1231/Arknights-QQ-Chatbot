@@ -1304,9 +1304,8 @@ async def handler(websocket):
                     is_called = any(name in msg_text for name in name_keywords)
                     triggered = is_at_me or is_called
 
-                    # 斜杠指令无论是否@都响应（未@时静默吞掉会被当成闲聊判回，用户以为设置成功实际没生效）
-                    # 指令处理内部自行校验管理员权限；未识别的斜杠文本返回 False 继续走正常流程
-                    if msg_text.strip().startswith("/"):
+                    # 指令只在被触发时响应，且不进群共享档案（未@时不处理，防止群友使唤别家bot时乱插嘴）
+                    if triggered and msg_text.strip().startswith("/"):
                         mem_key = f"group_{group_id}_{user_id}"
                         if await part_command.handle_group_command(
                             websocket, group_id, user_id, msg_text, admin,
@@ -1347,13 +1346,16 @@ async def handler(websocket):
                         f"{nickname}：{record_text}", message_id=mid
                     )
 
-                    # 显式搜索指令（搜一下xxx）：所有路径统一先扫，零成本
-                    search_query = extract_explicit_query(
-                        msg_text, settings.get("search_explicit_cmd_enabled", True)
-                    )
+                    # 显式搜索指令（搜一下xxx）：必须在被触发（@或喊名字）或自主互动模式下才响应
+                    # 仅提及模式下未被 @/喊名字 绝对不触发，防止群友使唤别家 bot（"搜一下/查一下"）时横插一嘴
+                    search_query = None
+                    if triggered or not settings.get("at_only", True):
+                        search_query = extract_explicit_query(
+                            msg_text, settings.get("search_explicit_cmd_enabled", True)
+                        )
 
-                    # 未触发且仅提及模式：直接跳过，不进冷却也不判定（显式搜索指令除外，用户明确要求查资料）
-                    if not triggered and not search_query and settings.get("at_only", True):
+                    # 未触发且仅提及模式：直接跳过，不进冷却也不判定
+                    if not triggered and settings.get("at_only", True):
                         log(f"[群聊] 群 {group_id} {nickname} 的消息未触发（当前为仅提及模式）")
                         continue
 

@@ -218,6 +218,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .logline.memory{border-left-color:#4f6b4f;color:#a9c8a9}
 .logline.error{border-left-color:var(--red);color:#ff8a80;background:rgba(255,59,48,.04)}
 .logline.musing{border-left-color:#8f6b3a;color:#e0c194}
+.logline.bot{border-left-color:#e07a5f;color:#f2cc8f}
 .logline.do{border-left-color:var(--accent);color:#b3e4ff}
 
 /* ---- memory ---- */
@@ -308,7 +309,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.2.0</div>
+      <div>BUILD 2026.11 // v1.2.1</div>
     </div>
   </aside>
 
@@ -558,9 +559,41 @@ input[type=range]{accent-color:var(--accent);width:100%}
             </div>
           </section>
 
+          <!-- bot shield -->
+          <section class="panel">
+            <div class="panel-h"><span class="n">06</span><span class="tt">Bot Shield</span><span class="desc">机器人防刷与概率衰减</span></div>
+            <div class="panel-b">
+              <div class="hint" style="margin-bottom:10px">标注群内其他机器人 QQ；与其互动时回复概率从 100% 开始按设定步长逐轮递减，直至掐断防死循环。群内真人发言或静默 5 分钟后自动重置连续计数。</div>
+              <div class="row wrap" style="gap:6px">
+                <span v-for="(b,i) in settings.known_bots" :key="b+i" class="tag c">
+                  <b>{{ b }}</b><span class="x" @click="removeBotQQ(i)">×</span>
+                </span>
+                <span v-if="!settings.known_bots || !settings.known_bots.length" class="faint small">暂未标注任何机器人</span>
+              </div>
+              <div class="row" style="margin-top:14px">
+                <input type="text" v-model="newBotQQ" placeholder="输入机器人QQ后回车" @keyup.enter="addBotQQ">
+                <button class="btn primary" @click="addBotQQ">ADD</button>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div>
+                  <div class="label">Decay Step / 每轮衰减比例</div>
+                  <div class="hint">每轮连续回复减去的概率百分比</div>
+                </div>
+                <div class="mono small" style="color:var(--accent)">-{{ settings.bot_decay_step || 25 }}%</div>
+              </div>
+              <div class="row" style="margin-top:8px">
+                <input type="range" min="1" max="100" step="1" v-model.number="settings.bot_decay_step" @change="saveSettings({bot_decay_step:settings.bot_decay_step})">
+              </div>
+              <div class="hint" style="margin-top:8px">
+                衰减预估：100% → {{ Math.max(0, 100 - (settings.bot_decay_step||25)) }}% → {{ Math.max(0, 100 - 2*(settings.bot_decay_step||25)) }}% → {{ Math.max(0, 100 - 3*(settings.bot_decay_step||25)) }}%
+              </div>
+            </div>
+          </section>
+
           <!-- target ops -->
           <section class="panel">
-            <div class="panel-h"><span class="n">06</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
+            <div class="panel-h"><span class="n">07</span><span class="tt">Target Ops</span><span class="desc">对单个档案操作</span></div>
             <div class="panel-b">
               <div class="row">
                 <input type="text" v-model="targetId" placeholder="QQ号 / group_群号 / group_群号_QQ号">
@@ -599,7 +632,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- command reference -->
           <section class="panel">
-            <div class="panel-h"><span class="n">07</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
+            <div class="panel-h"><span class="n">08</span><span class="tt">Reference</span><span class="desc">指令速查</span></div>
             <div class="panel-b tight">
               <pre class="mono small" style="padding:16px;white-space:pre-wrap;line-height:1.9;color:#bdbdbd;max-height:470px;overflow:auto">{{ helpText || '// 暂无指令说明' }}</pre>
             </div>
@@ -1285,13 +1318,14 @@ createApp({
       clock: '--:--:--',
       botRunning: false, botPid: null,
       status: { log_active:false, db_size:0, prompt_count:0, enabled_prompt_count:0, bot_qq:'' },
-      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30 },
+      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30, known_bots:[], bot_decay_step:25 },
       stickerStats: { total:0, mface_count:0, image_count:0 },
       musing: { config:{ interval_minutes:120, private_enabled:true, group_enabled:true, min_importance:0.7 }, overrides:{}, scopes:[] },
       musingSel: [], musingSearch: '', musingType: '', bulkInterval: null,
       archives: [], archiveSel: [], archiveSearch: '', archiveType: '',
       helpText: '',
       newKeyword: '',
+      newBotQQ: '',
       targetId: '', favorValue: 0, charText: '', personaText: '',
       profile: {}, hot: [], vectors: [],
       scope: '', searchQuery: '', searchScopes: '', results: [],
@@ -1301,6 +1335,7 @@ createApp({
       logFilterSet: [], 
       logFilters: [
         {key:'judge',label:'判断'},{key:'reply',label:'回复'},{key:'chat',label:'群聊'},
+        {key:'bot',label:'防刷'},
         {key:'search',label:'搜索'},{key:'quote',label:'引用'},{key:'rag',label:'RAG'},
         {key:'vector',label:'向量'},{key:'memory',label:'记忆'},{key:'freq',label:'频率'},
         {key:'musing',label:'发散'},{key:'sticker',label:'表情'},{key:'error',label:'错误'},
@@ -1460,6 +1495,21 @@ createApp({
     removeKeyword(i){
       const list = this.settings.name_keywords.filter((_,idx)=>idx!==i);
       this.saveSettings({name_keywords:list});
+    },
+    addBotQQ(){
+      const v = (this.newBotQQ || '').trim(); if(!v) return;
+      const clean = v.replace(/\D/g, '');
+      if(!clean) return;
+      const cur = this.settings.known_bots || [];
+      if(cur.includes(clean)) { this.newBotQQ=''; return; }
+      const list = [...cur, clean];
+      this.newBotQQ='';
+      this.saveSettings({known_bots:list});
+    },
+    removeBotQQ(i){
+      const cur = this.settings.known_bots || [];
+      const list = cur.filter((_,idx)=>idx!==i);
+      this.saveSettings({known_bots:list});
     },
 
     /* ---- musing ---- */
@@ -1790,6 +1840,7 @@ createApp({
       if(/\[向量\]/.test(line)) return 'vector';
       if(/\[记忆/.test(line)) return 'memory';
       if(/\[频率\]|\[冷却\]|\[去重\]|\[延迟\]/.test(line)) return 'freq';
+      if(/\[防刷\]/.test(line)) return 'bot';
       if(/\[胡思乱想\]|\[发散\]/.test(line)) return 'musing';
       if(/\[掷骰\]|\[指令\]|\[设置\]/.test(line)) return 'do';
       if(/\[群聊\]|收到私聊消息|群\s*\d+\s*收到/.test(line)) return 'chat';

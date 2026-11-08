@@ -738,6 +738,9 @@ DEFAULT_SETTINGS = {
     "sticker_capture_enabled": True,
     "sticker_capture_admin_only": True,
     "sticker_capture_probability": 30.0,
+    # 机器人防刷软保底：已知其他机器人 QQ 列表 + 连续互动概率步长衰减（从 100% 开始，每轮减去 step%）
+    "known_bots": [],
+    "bot_decay_step": 25.0,
 }
 
 def load_settings():
