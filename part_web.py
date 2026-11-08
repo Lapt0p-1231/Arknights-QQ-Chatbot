@@ -134,6 +134,11 @@ class TargetText(BaseModel):
     text: str = ""
 
 
+class TargetModeUpdate(BaseModel):
+    user_id: str
+    mode: str | None = None
+
+
 class MemoryClear(BaseModel):
     user_id: str
     group_id: str | None = None
@@ -712,6 +717,15 @@ def profile(user_id: str):
 @app.post("/api/favor")
 def set_favor(body: FavorUpdate):
     return {"favorability": part_record.set_favorability(body.user_id, body.value)}
+
+
+@app.post("/api/target/mode")
+def set_target_mode(body: TargetModeUpdate):
+    mode = (body.mode or "").strip()
+    if mode not in ("扮演", "聊天"):
+        mode = None
+    saved = part_record.set_user_mode(body.user_id.strip(), mode)
+    return {"user_id": body.user_id, "mode": saved}
 
 
 @app.post("/api/target/character")

@@ -1056,6 +1056,25 @@ def toggle_user_mode(user_id):
     print(f"[模式] 已将用户 {user_id} 的回复模式切换为 {mode}模式")
     return mode
 
+
+def set_user_mode(user_id, mode):
+    """设置指定档案的回复模式；mode 为 None/空 表示跟随全局默认。"""
+    memory = load_user_memory(user_id)
+    if mode in ("扮演", "聊天"):
+        memory["mode"] = mode
+        if mode == "聊天":
+            # 切到聊天模式时清洗历史里的动作和心声，防止模型模仿旧格式
+            for msg in memory.get("chat_history", []):
+                if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
+                    cleaned = re.sub(r"[（(][^（）()]*[）)]", "", msg["content"])
+                    cleaned = re.sub(r"\*[^*]*\*", "", cleaned)
+                    msg["content"] = cleaned.strip()
+    else:
+        memory["mode"] = None
+    save_user_memory(user_id, memory)
+    print(f"[模式] 档案 {user_id} 回复模式设为 {memory['mode'] or '跟随全局'}")
+    return memory["mode"]
+
 # ====== /memory reset ======
 # 只清记忆（对话/状态/好感度），保留人设和参数
 def clear_user_memory(user_id):

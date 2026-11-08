@@ -1357,10 +1357,19 @@ async def handler(websocket):
 
                     for seg in event.get("message", []):
                         if seg.get("type") == "at":
-                            #判断@
+                            # 判断@：@自己标记触发；@别人必须保留到文本里，否则模型会误以为在问自己
                             at_qq = str(seg.get("data", {}).get("qq", ""))
                             if at_qq == str(BOT_QQ):
                                 is_at_me = True
+                            else:
+                                at_data = seg.get("data", {})
+                                at_name = str(at_data.get("name") or "").strip()
+                                if at_qq.lower() == "all":
+                                    msg_text += "@全体成员 "
+                                elif at_name:
+                                    msg_text += f"@{at_name} "
+                                elif at_qq:
+                                    msg_text += f"@{at_qq} "
                         elif seg.get("type") == "text":
                             msg_text += seg.get("data", {}).get("text", "")
                         elif seg.get("type") == "reply":
