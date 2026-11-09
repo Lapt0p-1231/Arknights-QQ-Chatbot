@@ -310,7 +310,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.3.2</div>
+      <div>BUILD 2026.11 // v1.4.2</div>
     </div>
   </aside>
 
@@ -346,7 +346,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
             <div class="panel-h"><span class="n">01</span><span class="tt">System</span><span class="desc">全局行为</span></div>
             <div class="panel-b">
               <div class="row between">
-                <div><div class="label">At Only Mode</div><div class="hint">默认触发方式（群可在档案汇总页单独覆盖）</div></div>
+                <div><div class="label">At Only Mode</div><div class="hint">默认触发方式</div></div>
                 <div class="switch" :class="{on:settings.at_only}" @click="toggleAtOnly"></div>
               </div>
               <div class="divider"></div>
@@ -375,6 +375,11 @@ input[type=range]{accent-color:var(--accent);width:100%}
               <div class="row between">
                 <div><div class="label">Quote Threshold</div><div class="hint">引用阈值</div></div>
                 <input type="number" min="0" max="200" step="1" v-model.number="settings.quote_threshold" style="width:90px" @change="saveSettings({quote_threshold:settings.quote_threshold})">
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Max Words</div><div class="hint">回复字数上限</div></div>
+                <input type="number" min="5" max="2000" step="1" v-model.number="settings.max_words" style="width:90px" @change="saveSettings({max_words:settings.max_words})">
               </div>
               <div class="divider"></div>
               <div class="row">
@@ -479,19 +484,28 @@ input[type=range]{accent-color:var(--accent);width:100%}
                   <button :class="{on:settings.sticker_mode==='PY'}" @click="saveSettings({sticker_mode:'PY'})">PY</button>
                 </div>
               </div>
-              <div class="divider"></div>
+              <div class="divider" v-if="settings.sticker_mode==='PY'"></div>
               <div class="row" v-if="settings.sticker_mode==='PY'">
                 <div class="grow">
-                  <div class="row between"><span class="label">Attach Probability / 表情附带概率 (PY模式)</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_probability }}%</span></div>
+                  <div class="row between"><span class="label">Trigger Probability / 表情触发概率</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_probability }}%</span></div>
                   <input type="range" min="0" max="100" step="5" v-model.number="settings.sticker_probability" @change="saveSettings({sticker_probability:settings.sticker_probability})">
                 </div>
               </div>
-              <div class="divider" v-if="settings.sticker_mode==='PY'"></div>
+              <div class="divider"></div>
               <div class="row">
                 <div class="grow">
-                  <div class="row between"><span class="label">Sticker Cooldown / 表情发送冷却</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_cooldown }}s</span></div>
+                  <div class="row between"><span class="label">Sticker Cooldown / 表情触发冷却</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_cooldown }}s</span></div>
                   <input type="range" min="0" max="300" step="5" v-model.number="settings.sticker_cooldown" @change="saveSettings({sticker_cooldown:settings.sticker_cooldown})">
                 </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Auto Tag / 自动标签</div><div class="hint">用视觉模型给新图生成标签。关闭则不产生调用费用</div></div>
+                <div class="switch" :class="{on:settings.sticker_autotag_enabled}" @click="saveSettings({sticker_autotag_enabled:!settings.sticker_autotag_enabled})"></div>
+              </div>
+              <div class="divider" v-if="settings.sticker_autotag_enabled"></div>
+              <div class="row" v-if="settings.sticker_autotag_enabled">
+                <div class="grow"><div class="hint">打标使用的模型在「Model」页的 STICKER TAGGING 路由中配置（需要支持图片输入）。</div></div>
               </div>
               <div class="divider"></div>
               <div class="row between">
@@ -500,17 +514,17 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider"></div>
               <div class="row between">
-                <div><div class="label" style="color:#e0af68">Capture-Only / 纯捕获模式</div><div class="hint">开启后不回复任何消息，仅后台静默抓取表情，方便大量喂图</div></div>
+                <div><div class="label" style="color:#e0af68">Capture-Only / 纯捕获模式</div><div class="hint">开启后仅后台静默抓取表情，方便大量喂图</div></div>
                 <div class="switch" :class="{on:settings.sticker_capture_only}" @click="saveSettings({sticker_capture_only:!settings.sticker_capture_only})"></div>
               </div>
               <div class="divider"></div>
               <div class="row between">
-                <div><div class="label">Auto Capture / 总抓取开关</div><div class="hint">是否自动抓取收到的表情包入库</div></div>
+                <div><div class="label">Auto Capture / 总抓取开关</div><div class="hint">是否自动抓取表情包</div></div>
                 <div class="switch" :class="{on:settings.sticker_capture_enabled}" @click="saveSettings({sticker_capture_enabled:!settings.sticker_capture_enabled})"></div>
               </div>
               <div class="divider" v-if="settings.sticker_capture_enabled"></div>
               <div class="row between" v-if="settings.sticker_capture_enabled">
-                <div><div class="label">Admin Only / 仅抓取管理员</div><div class="hint">只抓取管理员发的表情，防止群友刷屏污染库</div></div>
+                <div><div class="label">Admin Only / 仅抓取管理员</div><div class="hint">仅抓取管理员的表情</div></div>
                 <div class="switch" :class="{on:settings.sticker_capture_admin_only}" @click="saveSettings({sticker_capture_admin_only:!settings.sticker_capture_admin_only})"></div>
               </div>
               <div class="divider" v-if="settings.sticker_capture_enabled && !settings.sticker_capture_admin_only"></div>
@@ -562,9 +576,9 @@ input[type=range]{accent-color:var(--accent);width:100%}
 
           <!-- bot shield -->
           <section class="panel">
-            <div class="panel-h"><span class="n">06</span><span class="tt">Bot Shield</span><span class="desc">机器人防刷与概率衰减</span></div>
+            <div class="panel-h"><span class="n">06</span><span class="tt">Bot Shield</span><span class="desc">机器人防刷概率衰减</span></div>
             <div class="panel-b">
-              <div class="hint" style="margin-bottom:10px">标注群内其他机器人 QQ；与其互动时回复概率从 100% 开始按设定步长逐轮递减，直至掐断防死循环。群内真人发言或静默 5 分钟后自动重置连续计数。</div>
+              <div class="hint" style="margin-bottom:10px">与标注的QQ号进行互动时，回复概率从 100% 开始按设定步长逐轮递减，群内真人发言或静默 5 分钟后自动重置</div>
               <div class="row wrap" style="gap:6px">
                 <span v-for="(b,i) in settings.known_bots" :key="b+i" class="tag c">
                   <b>{{ b }}</b><span class="x" @click="removeBotQQ(i)">×</span>
@@ -572,7 +586,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
                 <span v-if="!settings.known_bots || !settings.known_bots.length" class="faint small">暂未标注任何机器人</span>
               </div>
               <div class="row" style="margin-top:14px">
-                <input type="text" v-model="newBotQQ" placeholder="输入机器人QQ后回车" @keyup.enter="addBotQQ">
+                <input type="text" v-model="newBotQQ" placeholder="输入机器人QQ" @keyup.enter="addBotQQ">
                 <button class="btn primary" @click="addBotQQ">ADD</button>
               </div>
               <div class="divider"></div>
@@ -598,9 +612,13 @@ input[type=range]{accent-color:var(--accent);width:100%}
             <div class="panel-b">
               <div class="row between">
                 <div><div class="label">Proactive Messaging</div><div class="hint">主动搭讪总开关</div></div>
-                <div class="switch" :class="{on:settings.proactive_enabled}" @click="saveSettings({proactive_enabled:!settings.proactive_enabled})"></div>
+                <div class="switch" :class="{on:settings.proactive_enabled}" @click="toggleProactive()"></div>
               </div>
               <div class="divider"></div>
+              <div class="row" v-if="settings.proactive_enabled && !proactiveHasMusings()">
+                <div class="hint" style="color:#e0af68">当前没有胡思乱想内容；主动搭讪会走 A/B 实时生成，建议先去 Musing 页开启发散功能。</div>
+              </div>
+              <div class="divider" v-if="settings.proactive_enabled && !proactiveHasMusings()"></div>
               <div>
                 <div class="label" style="margin-bottom:5px">Targets / 目标列表</div>
                 <div class="hint" style="margin-bottom:8px">QQ号 或 group_群号，逗号分隔，留空默认私聊管理员</div>
@@ -627,6 +645,18 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider"></div>
               <div class="row between">
+                <span class="label">Type Mix / 类型倾向</span>
+                <span class="mono small" style="color:var(--accent)">A {{ settings.proactive_type_a_ratio }}% · B {{ 100 - settings.proactive_type_a_ratio }}%</span>
+              </div>
+              <div class="row between" style="font-size:11px;color:var(--faint);margin-top:6px">
+                <span>类型 B · 自生成事件</span>
+                <span>类型 A · 往事发散</span>
+              </div>
+              <div class="row" style="margin-top:8px">
+                <input type="range" min="0" max="100" step="5" v-model.number="settings.proactive_type_a_ratio" @change="saveSettings({proactive_type_a_ratio:settings.proactive_type_a_ratio})">
+              </div>
+              <div class="divider"></div>
+              <div class="row between">
                 <div>
                   <div class="label">Quiet Hours / 勿扰时段</div>
                   <div class="hint">该时间段内静默</div>
@@ -648,6 +678,13 @@ input[type=range]{accent-color:var(--accent);width:100%}
                   <input type="number" min="1" max="1440" step="5" v-model.number="settings.proactive_group_idle_minutes" style="width:90px" @change="saveSettings({proactive_group_idle_minutes:settings.proactive_group_idle_minutes})">
                   <span class="mono faint small">分钟</span>
                 </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row wrap" style="gap:8px;align-items:center">
+                <button class="btn primary" @click="testProactive()">搭讪测试</button>
+                <button class="btn" @click="testProactive('private')">仅私聊</button>
+                <button class="btn" @click="testProactive('group')">仅群聊</button>
+                <span class="hint">按上方目标列表强制触发一次，跳过冷却/勿扰/群冷场；结果见日志 [主动]</span>
               </div>
             </div>
           </section>
@@ -785,6 +822,14 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
             </div>
             <div class="hint" style="margin-top:6px">低于此相似度的"回忆"不注入提示词</div>
+            <div class="divider"></div>
+            <div class="row">
+              <div class="grow">
+                <div class="row between"><span class="label">Ingest Threshold / 向量入库重要度门槛</span><span class="mono small" style="color:var(--accent)">{{ settings.vector_min_importance }}</span></div>
+                <input type="range" min="0" max="1" step="0.05" v-model.number="settings.vector_min_importance" @change="saveSettings({vector_min_importance:settings.vector_min_importance})">
+              </div>
+            </div>
+            <div class="hint" style="margin-top:6px">低于此重要度的对话切片不写入向量库</div>
           </div>
         </section>
 
@@ -1199,6 +1244,13 @@ input[type=range]{accent-color:var(--accent);width:100%}
                 </select>
               </div>
               <div class="divider"></div>
+              <div class="row between">
+                <div><div class="label">Sticker Tagging / 表情标签</div><div class="hint">自动判断标签（需支持图片输入）</div></div>
+                <select :value="models.routes.sticker_tag" @change="setRoute('sticker_tag',$event.target.value)" style="width:220px">
+                  <option v-for="p in models.profiles" :key="p.id" :value="p.id">{{ p.name }} · {{ p.model }}</option>
+                </select>
+              </div>
+              <div class="divider"></div>
             </div>
           </section>
 
@@ -1415,7 +1467,7 @@ createApp({
       clock: '--:--:--',
       botRunning: false, botPid: null,
       status: { log_active:false, db_size:0, prompt_count:0, enabled_prompt_count:0, bot_qq:'' },
-      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30, known_bots:[], bot_decay_step:25, proactive_enabled:false, proactive_target:'', proactive_interval_minutes:180, proactive_probability:50, proactive_quiet_start:23, proactive_quiet_end:8, proactive_group_idle_minutes:30 },
+      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, max_words:20, vector_min_importance:0.35, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30, sticker_autotag_enabled:false, known_bots:[], bot_decay_step:25, proactive_enabled:false, proactive_target:'', proactive_interval_minutes:180, proactive_probability:50, proactive_quiet_start:23, proactive_quiet_end:8, proactive_group_idle_minutes:30, proactive_type_a_ratio:50 },
       stickerStats: { total:0, mface_count:0, image_count:0 },
       musing: { config:{ interval_minutes:120, private_enabled:true, group_enabled:true, min_importance:0.7 }, overrides:{}, scopes:[] },
       musingSel: [], musingSearch: '', musingType: '', bulkInterval: null,
@@ -1491,7 +1543,7 @@ createApp({
     this.tick(); setInterval(this.tick, 1000);
     this.refreshStatus(); this.refreshBotStatus();
     setInterval(()=>{ this.refreshStatus(); this.refreshBotStatus(); }, 15000);
-    this.loadSettings(); this.loadHelp(); this.loadPrompts(); this.loadMusing(); this.loadArchives();
+    this.loadSettings(); this.loadHelp(); this.loadPrompts(); this.loadMusing(); this.loadArchives(); this.loadModels();
     this.connectWS();
     this.$watch('tab', v => {
       if(v==='prompts') this.loadPrompts();
@@ -1564,6 +1616,22 @@ createApp({
       } catch(e){}
     },
     async loadHelp(){ try { this.helpText = (await this.api('/api/help')).text; } catch(e){} },
+    proactiveHasMusings(){
+      const scopes = (this.musing && this.musing.scopes) || [];
+      return scopes.some(s => (s.last_musing || 0) > 0);
+    },
+    async toggleProactive(){
+      const next = !this.settings.proactive_enabled;
+      await this.saveSettings({proactive_enabled: next});
+      if(next && !this.proactiveHasMusings()){
+        this.toast('WARN', '当前还没有任何胡思乱想内容；主动搭讪会走 A/B 实时生成，建议先去 Musing 页开启发散功能。', true);
+      }
+    },
+    async testProactive(kind){
+      await this.guard(async()=>{
+        await this.api('/api/proactive/poke',{method:'POST',body:{target_type: kind || null}});
+      }, '已提交冒泡测试，机器人将在数秒内触发（结果见日志 [主动]）');
+    },
     async saveSettings(patch){
       // 乐观更新：点击瞬间先切换本地状态，让 UI 立刻响应动画，不用等服务器返回
       Object.assign(this.settings, patch);

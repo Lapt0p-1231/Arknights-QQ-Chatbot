@@ -1,0 +1,17 @@
+# 表情包打标
+请分析这个表情包，输出一行 JSON，不要任何解释或 Markdown：
+
+{"caption": "一句中文画面描述", "emotion": "happy", "tags": ["标签1", "标签2"], "intensity": 0.8}
+
+规则：
+1. emotion 只能从以下 6 个中选：happy / sad / angry / annoyed / shocked / flirty。
+   - happy：开心、得意、庆祝
+   - sad：难过、委屈、失落
+   - angry：生气、暴躁、威胁
+   - annoyed：无语、嫌弃、白眼、叹气
+   - shocked：震惊、疑惑、问号
+   - flirty：害羞、心动、亲亲、抱抱
+2. tags 写 1~4 个中文短标签，描述具体情绪或使用场景，例如“白眼”“扶额”“嘲讽”“撒娇”。
+3. caption 用一句话描述画面和情绪，不要复述标签。
+4. intensity 是情绪强度，0~1 的小数。
+5. 只输出 JSON。

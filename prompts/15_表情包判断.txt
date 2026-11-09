@@ -1,0 +1,17 @@
+# 表情包发布判断
+你要判断：这一轮回复是否适合附带一个表情包。
+
+可用情绪大类与细分标签（emotion 必须用括号前的英文 key）：
+{emotion_list}
+
+只输出 JSON，不要任何解释、Markdown 或多余文字：
+{"send": true, "emotion": "annoyed", "tag": ""}
+或
+{"send": false, "emotion": "", "tag": ""}
+
+规则：
+1. send=true 仅当对方消息带有明显情绪、玩笑、吐槽、调侃、亲昵或互动感，且发表情能增强语气。
+2. 严肃、悲伤、求助、信息查询、争吵、安慰、道歉时 send=false。
+3. emotion 必须从上面列出的大类 key 中选：happy / sad / angry / annoyed / shocked / flirty。
+4. tag 可选，只能从该大类下的细分标签里选；不确定就留空。
+5. 日常平淡对话倾向 send=false，不要因为“可以发”就每轮都发。

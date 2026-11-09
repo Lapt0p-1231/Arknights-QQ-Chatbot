@@ -13,7 +13,7 @@ CONFIG_FILE = os.environ.get(
     "QQ_BOT_PROMPT_CONFIG", os.path.join(BASE_DIR, "prompts_config.json")
 )
 
-# 默认配置：白金人设作为可选模板，默认关闭，可在 WebUI 中启用
+# 公开标准版默认配置：白金人设作为可选模板，默认关闭
 DEFAULT_FILES = [
     {"file": "02_角色人设（白金）.txt", "enabled": False, "character": True},
     {"file": "03_符号格式.txt", "enabled": True, "format": True},
@@ -22,9 +22,12 @@ DEFAULT_FILES = [
     {"file": "06_聊天模式.txt", "enabled": True, "chat": True},
     {"file": "07_记忆总结.txt", "enabled": True, "internal": True},
     {"file": "09_群聊判断.txt", "enabled": True, "internal": True},
-    {"file": "10_记忆打分.txt", "enabled": True, "internal": True},
+    {"file": "10_记忆打分.txt", "enabled": False, "internal": True},
     {"file": "11_胡思乱想.txt", "enabled": True, "internal": True},
     {"file": "12_群聊回复.txt", "enabled": True, "internal": True},
+    {"file": "13_主动搭话.txt", "enabled": True, "internal": True},
+    {"file": "15_表情包判断.txt", "enabled": True, "internal": True},
+    {"file": "16_表情包打标.txt", "enabled": True, "internal": True},
 ]
 
 # mtime 缓存：配置文件、提示词内容
@@ -41,7 +44,7 @@ def _infer_flags(filename):
         flags["format"] = True
     elif filename.startswith("06_"):
         flags["chat"] = True
-    elif filename.startswith(("07_", "09_", "10_", "11_", "12_")):
+    elif filename.startswith(("07_", "09_", "10_", "11_", "12_", "13_", "15_", "16_")):
         flags["internal"] = True
     return flags
 

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import part_record
@@ -8,32 +9,38 @@ import part_sticker
 # WebUI 指令速查展示用（完整版）
 CMD_HELP_TEXT = (
     "[指令列表]\n"
-    "/表情 - 查看公共表情库收录统计\n"
+    "\n"
+    "【通用】\n"
+    "/sticker 或 /表情 - 查看公共表情库收录统计\n"
     "/rl - 重新生成上一条回复\n"
-    "/char set <角色设定> - 设置专属人格 [仅私聊]\n"
-    "/char clear - 清除专属人格 [仅私聊]\n"
     "/charfit set <0.0-1.0> - 设置人格拟合度\n"
-    "/user set <用户人设> - 设置用户信息\n"
-    "/user clear - 清除用户信息\n"
-    "/mdchange - 切换回复模式 [群聊仅管理]\n"
-    "/atswitch - 切换触发方式（群内切本群，私聊切全局默认）[仅管理]\n"
-    "/cd set <秒数> - 设置自动回复冷却 [仅管理]\n"
-    "/atcd set <秒数> - 设置被@回复冷却 [仅管理]）\n"
-    "/faver set <QQ号> <数值> - 设置好感度 [仅管理]\n"
-    "/name set <名字1> <名字2>... - 设置提名列表 [仅管理]\n"
-    "/infer set <AI/PY> - 设置判回方式：AI/概率 [仅管理]\n"
-    "/pro set <概率> - 设置掷骰概率 [仅管理]\n"
-    "/smode set <AI/PY> - 设置表情触发方式 [仅管理]\n"
-    "/spro set <概率> - 设置表情附带概率 [仅管理]\n"
-    "/scd set <秒数> - 设置表情冷却时间 [仅管理]\n"
-    "/斗图 - 开关斗图恶搞模式 [仅管理]\n"
-    "/bot add <QQ> - 标注群内其他机器人QQ [仅管理]\n"
-    "/bot del <QQ> - 移除已标注机器人 [仅管理]\n"
-    "/bot list - 查看已标注机器人及衰减步长 [仅管理]\n"
-    "/bot step <百分比> - 设置连续互动概率衰减步长(0-100) [仅管理]\n"
-    "/poke - 立即触发一次主动搭讪/冒泡测试 [仅管理]\n"
-    "/memory reset - 清空聊天记忆 [群聊中仅管理]\n"
-    "/cmd help - 查看本指令列表"
+    "/user set <用户信息> - 记录你的信息\n"
+    "/user clear - 清除你的信息\n"
+    "/mdchange - 切换回复模式（群内切换本群；私聊切换本人）[群内仅管理]\n"
+    "/cmd help - 查看本指令列表\n"
+    "\n"
+    "【仅私聊】\n"
+    "/char set <角色设定> - 设置专属人格\n"
+    "/char clear - 清除专属人格\n"
+    "\n"
+    "【管理员】\n"
+    "/atswitch - 切换触发方式（群内切本群，私聊切全局默认）\n"
+    "/cd set <秒数> - 设置自动回复冷却\n"
+    "/atcd set <秒数> - 设置被 @ 回复冷却\n"
+    "/faver set <QQ号> <数值> - 设置好感度\n"
+    "/name set <名字1> <名字2> ... - 设置提名列表\n"
+    "/infer set <AI/PY> - 设置判回方式：AI 判断 / 概率掷骰\n"
+    "/pro set <概率> - 设置掷骰概率\n"
+    "/smode set <AI/PY> - 设置表情触发方式\n"
+    "/spro set <概率> - 设置表情附带概率\n"
+    "/scd set <秒数> - 设置表情冷却时间\n"
+    "/斗图 或 /duel - 开关斗图恶搞模式\n"
+    "/memory reset - 清空聊天记忆\n"
+    "/bot list - 查看已标注机器人及衰减步长\n"
+    "/bot add <QQ> - 标注群内其他机器人\n"
+    "/bot del <QQ> - 移除已标注机器人\n"
+    "/bot step <百分比> - 设置连续互动概率衰减步长\n"
+    "/poke 或 /戳我 或 /搭讪 - 立即触发一次主动搭讪（群内可用 /冒泡）"
 )
 
 
@@ -41,6 +48,7 @@ def build_help(admin=False, in_group=False):
     """按权限和场景生成指令列表：普通用户只看到自己能用的。"""
     lines = [
         "[指令列表]",
+        "/sticker 或 /表情 - 查看公共表情库统计",
         "/rl - 重新生成上一条回复",
         "/user set <用户信息> - 记录你的信息",
         "/user clear - 清除你的信息",
@@ -73,12 +81,12 @@ def build_help(admin=False, in_group=False):
             "/smode set <AI/PY> - 设置表情触发方式",
             "/spro set <概率> - 设置表情附带概率",
             "/scd set <秒数> - 设置表情冷却时间",
-            "/斗图 - 开关斗图恶搞模式",
+            "/斗图 或 /duel - 开关斗图恶搞模式",
             "/bot add <QQ> - 标注群内其他机器人QQ",
             "/bot del <QQ> - 移除已标注机器人",
             "/bot list - 查看已标注机器人及衰减步长",
             "/bot step <百分比> - 设置连续互动概率衰减步长(0-100)",
-            "/poke - 立即触发一次主动搭讪/冒泡测试",
+            "/poke 或 /戳我 或 /搭讪 - 立即触发一次主动搭讪（群内可用 /冒泡）",
         ]
     lines.append("/cmd help - 查看本指令列表")
     return "\n".join(lines)
@@ -305,69 +313,98 @@ def _handle_bot_cmd(text):
     return "[指令] 机器人防刷指令格式：\n/bot list\n/bot add <QQ>\n/bot del <QQ>\n/bot step <百分比>"
 
 
-# ===== 私聊指令 ======
-# on_rl: /rl 触发的重新生成回调
-# on_poke: /poke 触发的主动搭讪测试回调
-async def handle_private_command(websocket, user_id, msg_text, admin, on_rl, on_poke=None):
-    text = msg_text.strip()
+async def _to_thread(fn, *args):
+    return await asyncio.to_thread(fn, *args)
 
-    # /poke /戳我 /搭讪
-    if text in ("/poke", "/戳我", "/搭讪"):
+
+# ===== 统一指令处理（私聊 / 群聊）======
+async def handle_command(websocket, event, msg_text, admin, on_rl, on_poke=None):
+    text = msg_text.strip()
+    in_group = event.get("message_type") == "group"
+    user_id = str(event.get("user_id"))
+    group_id = event.get("group_id")
+    mem_key = f"group_{group_id}_{user_id}" if in_group else user_id
+    scope_key = f"group_{group_id}" if in_group else user_id
+
+    async def reply_msg(content):
+        if in_group:
+            await send_group(websocket, group_id, content)
+        else:
+            await send_private(websocket, user_id, content)
+
+    # /poke /戳我 /搭讪 /冒泡
+    if text in ("/poke", "/戳我", "/搭讪", "/冒泡"):
         if not admin:
-            reply = "[指令] 仅管理员可用"
-            await send_private(websocket, user_id, reply)
-            return True
-        if on_poke:
+            await reply_msg("[指令] 仅管理员可用")
+        elif on_poke:
             on_poke()
         else:
-            await send_private(websocket, user_id, "[指令] 未配置主动搭讪回调")
+            await reply_msg("[指令] 未配置主动冒泡回调" if in_group else "[指令] 未配置主动搭讪回调")
         return True
 
     # 表情库查看
     if text in ("/sticker", "/表情"):
         stats = await part_sticker.get_sticker_stats()
-        reply = _format_sticker_stats(stats)
-        await send_private(websocket, user_id, reply)
+        await reply_msg(_format_sticker_stats(stats))
+        return True
+
+    # /rl：数据库弹出与重新入库统一放入调用方的串行队列
+    if text == "/rl":
+        if on_rl:
+            on_rl()
         return True
 
     # /memory reset
     if text == "/memory reset":
-        part_record.clear_user_memory(str(user_id))
-        await send_private(websocket, user_id, "[指令] 记忆已全部清空")
+        if in_group:
+            if not admin:
+                await reply_msg("[指令] 仅管理员可用")
+            else:
+                await _to_thread(part_record.clear_user_memory, mem_key)
+                await _to_thread(part_record.clear_user_memory, scope_key)
+                await reply_msg("[指令] 记忆已全部清空")
+        else:
+            await _to_thread(part_record.clear_user_memory, user_id)
+            await reply_msg("[指令] 记忆已全部清空")
         return True
 
-    # /char set
-    if text.startswith("/char set"):
+    # /char set /char clear
+    if text.startswith("/char set") or text == "/char clear":
+        if in_group:
+            await reply_msg("[指令] 群聊已统一使用默认人格，专属人设请在私聊里设置")
+            return True
+        if text == "/char clear":
+            await _to_thread(part_record.clear_user_character, user_id)
+            await reply_msg("[指令] 专属人设已清除")
+            return True
         new_char = text[9:].strip()
         if not new_char:
-            reply = "[指令] 请使用格式：/char set <角色设定>"
+            await reply_msg("[指令] 请使用格式：/char set <角色设定>")
         else:
-            part_record.set_user_character(str(user_id), new_char)
-            reply = "[指令] 专属人设已设置"
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /char clear
-    if text == "/char clear":
-        part_record.clear_user_character(str(user_id))
-        await send_private(websocket, user_id, "[指令] 专属人设已清除")
+            await _to_thread(part_record.set_user_character, user_id, new_char)
+            await reply_msg("[指令] 专属人设已设置")
         return True
 
     # /user set
     if text.startswith("/user set"):
         new_persona = text[9:].strip()
         if not new_persona:
-            reply = "[指令] 请使用格式：/user set <你的信息，例如：我叫小明，男，25岁，程序员>"
+            await reply_msg("[指令] 请使用格式：/user set <你的信息>")
         else:
-            part_record.set_user_persona(str(user_id), new_persona)
-            reply = "[指令] 你的个人信息已记录"
-        await send_private(websocket, user_id, reply)
+            await _to_thread(part_record.set_user_persona, mem_key, new_persona)
+            await reply_msg(
+                "[指令] 你在本群的个人信息已记录！" if in_group
+                else "[指令] 你的个人信息已记录"
+            )
         return True
 
     # /user clear
     if text == "/user clear":
-        part_record.clear_user_persona(str(user_id))
-        await send_private(websocket, user_id, "[指令] 你的个人信息已清除")
+        await _to_thread(part_record.clear_user_persona, mem_key)
+        await reply_msg(
+            "[指令] 你在本群的个人信息已清除" if in_group
+            else "[指令] 你的个人信息已清除"
+        )
         return True
 
     # /charfit set
@@ -377,7 +414,7 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl, on_
             try:
                 value = float(parts[2])
                 if 0.0 <= value <= 1.0:
-                    part_record.set_user_fitness(str(user_id), value)
+                    await _to_thread(part_record.set_user_fitness, mem_key, value)
                     reply = f"[指令] 人设拟合度已设置为 {value}"
                 else:
                     reply = "[指令] 参数范围：0.0 - 1.0"
@@ -385,301 +422,137 @@ async def handle_private_command(websocket, user_id, msg_text, admin, on_rl, on_
                 reply = "[指令] 请使用格式：/charfit set <0.0-1.0>"
         else:
             reply = "[指令] 请使用格式：/charfit set <0.0-1.0>"
-        await send_private(websocket, user_id, reply)
+        await reply_msg(reply)
         return True
 
     # /mdchange
     if text == "/mdchange":
-        new_mode = part_record.toggle_user_mode(str(user_id))
-        await send_private(websocket, user_id, f"[指令] 回复模式已切换为：{new_mode}模式")
-        return True
-
-    # /rl
-    if text == "/rl":
-        last_msg = part_record.pop_last_turn(str(user_id))
-        if not last_msg:
-            await send_private(websocket, user_id, "[指令] 没有可以重新生成的对话")
+        if in_group and not admin:
+            await reply_msg("[指令] 群内切换回复模式仅管理员可用")
+        elif in_group:
+            new_mode = await _to_thread(part_record.toggle_user_mode, scope_key)
+            await reply_msg(f"[指令] 本群回复模式已切换为：{new_mode}模式")
         else:
-            on_rl(last_msg)
+            new_mode = await _to_thread(part_record.toggle_user_mode, user_id)
+            await reply_msg(f"[指令] 回复模式已切换为：{new_mode}模式")
         return True
 
-    # /atswitch（仅管理员）—— 私聊里切换全局默认触发方式
+    # /atswitch
     if text == "/atswitch":
         if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            at_only = part_record.toggle_at_only()
-            reply = f"[指令] 全局默认触发方式已切换为：{'仅提及' if at_only else '自主互动'}（群可单独覆盖）"
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /cd set（仅管理员）
-    if text.startswith("/cd set"):
-        if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            reply = _parse_cdset(text, "reply_cooldown", "自动回复冷却")
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /atcd set（仅管理员）
-    if text.startswith("/atcd set"):
-        if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            reply = _parse_cdset(text, "reply_cooldown_at", "被@回复冷却")
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /faver set（仅管理员）
-    if text.startswith("/faver set"):
-        if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            parts = text.split()
-            target = parts[2] if len(parts) >= 3 else ""
-            reply = _parse_faverset(text, target, target)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /name set（仅管理员）
-    if text.startswith("/name set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_nameset(text)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /infer set（仅管理员）
-    if text.startswith("/infer set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_inferset(text)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /pro set（仅管理员）
-    if text.startswith("/pro set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_proset(text)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # 表情包管理指令（仅管理员）
-    if text.startswith("/smode set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_smodeset(text)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    if text.startswith("/spro set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_sproset(text)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    if text.startswith("/scd set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_scdset(text)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    if text in ("/斗图", "/duel"):
-        reply = "[指令] 仅管理员可用" if not admin else _toggle_duel()
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /bot（仅管理员）
-    if text.startswith("/bot"):
-        reply = "[指令] 仅管理员可用" if not admin else _handle_bot_cmd(text)
-        await send_private(websocket, user_id, reply)
-        return True
-
-    # /cmd help
-    if text == "/cmd help":
-        await send_private(websocket, user_id, build_help(admin=admin, in_group=False))
-        return True
-
-    return False
-
-
-# ===== 群聊指令 ======
-async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on_rl, on_poke=None):
-    text = msg_text.strip()
-    mem_key = f"group_{group_id}_{user_id}"
-
-    # /poke /戳我 /冒泡（仅管理员）
-    if text in ("/poke", "/戳我", "/冒泡", "/搭讪"):
-        if not admin:
-            await send_group(websocket, group_id, "[指令] 仅管理员可用")
-            return True
-        if on_poke:
-            on_poke()
-        else:
-            await send_group(websocket, group_id, "[指令] 未配置主动冒泡回调")
-        return True
-
-    # 表情库查看
-    if text in ("/sticker", "/表情"):
-        stats = await part_sticker.get_sticker_stats()
-        reply = _format_sticker_stats(stats)
-        await send_group(websocket, group_id, reply)
-        return True
-
-    # /rl
-    if text == "/rl":
-        last_msg = part_record.pop_last_turn(f"group_{group_id}")
-        if not last_msg:
-            await send_group(websocket, group_id, "[指令] 没有可以重新生成的对话")
-        else:
-            part_record.append_group_history(group_id, "user", last_msg)
-            on_rl(last_msg)
-        return True
-
-    # /memory reset（仅管理员）
-    if text == "/memory reset":
-        if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            part_record.clear_user_memory(mem_key)
-            part_record.clear_user_memory(f"group_{group_id}")
-            reply = "[指令] 记忆已全部清空"
-        await send_group(websocket, group_id, reply)
-        return True
-
-    # /char set（群聊已统一使用默认人格，专属人设仅私聊生效）
-    if text.startswith("/char set") or text == "/char clear":
-        await send_group(websocket, group_id, "[指令] 群聊已统一使用默认人格，专属人设请在私聊里设置")
-        return True
-
-    # /user set
-    if text.startswith("/user set"):
-        new_persona = text[9:].strip()
-        if not new_persona:
-            reply = "[指令] 请使用格式：/user set <你的信息>"
-        else:
-            part_record.set_user_persona(mem_key, new_persona)
-            reply = "[指令] 你在本群的个人信息已记录！"
-        await send_group(websocket, group_id, reply)
-        return True
-
-    # /user clear
-    if text == "/user clear":
-        part_record.clear_user_persona(mem_key)
-        await send_group(websocket, group_id, "[指令] 你在本群的个人信息已清除")
-        return True
-
-    # /charfit set
-    if text.startswith("/charfit"):
-        parts = text.split()
-        if len(parts) == 3 and parts[1] == "set":
-            try:
-                value = float(parts[2])
-                if 0.0 <= value <= 1.0:
-                    part_record.set_user_fitness(mem_key, value)
-                    reply = f"[指令] 人设拟合度已设置为 {value}"
-                else:
-                    reply = "[指令] 参数范围：0.0 - 1.0"
-            except ValueError:
-                reply = "[指令] 请使用格式：/charfit set <0.0-1.0>"
-        else:
-            reply = "[指令] 请使用格式：/charfit set <0.0-1.0>"
-        await send_group(websocket, group_id, reply)
-        return True
-
-    # /mdchange（群内仅管理员；私聊不受限）
-    if text == "/mdchange":
-        if not admin:
-            reply = "[指令] 群内切换回复模式仅管理员可用"
-        else:
-            new_mode = part_record.toggle_user_mode(f"group_{group_id}")
-            reply = f"[指令] 本群回复模式已切换为：{new_mode}模式"
-        await send_group(websocket, group_id, reply)
-        return True
-
-    # /atswitch（仅管理员）—— 群内切换本群的触发方式覆盖
-    if text == "/atswitch":
-        if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            scope = f"group_{group_id}"
-            settings = part_record.load_settings()
-            cur = part_record.effective_at_only(settings, scope)
+            await reply_msg("[指令] 仅管理员可用")
+        elif in_group:
+            settings = await _to_thread(part_record.load_settings)
+            cur = await _to_thread(part_record.effective_at_only, settings, scope_key)
             new_val = not cur
-            part_record.set_archive_at_only(scope, new_val)
-            reply = f"[指令] 本群触发方式已切换为：{'仅提及' if new_val else '自主互动'}"
-        await send_group(websocket, group_id, reply)
+            await _to_thread(part_record.set_archive_at_only, scope_key, new_val)
+            await reply_msg(f"[指令] 本群触发方式已切换为：{'仅提及' if new_val else '自主互动'}")
+        else:
+            at_only = await _to_thread(part_record.toggle_at_only)
+            await reply_msg(
+                f"[指令] 全局默认触发方式已切换为："
+                f"{'仅提及' if at_only else '自主互动'}（群可单独覆盖）"
+            )
         return True
 
-    # /cd set（仅管理员）
+    # /cd set /atcd set
     if text.startswith("/cd set"):
-        if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            reply = _parse_cdset(text, "reply_cooldown", "自动回复冷却")
-        await send_group(websocket, group_id, reply)
+        reply = (
+            "[指令] 仅管理员可用" if not admin
+            else await _to_thread(_parse_cdset, text, "reply_cooldown", "自动回复冷却")
+        )
+        await reply_msg(reply)
         return True
 
-    # /atcd set（仅管理员）
     if text.startswith("/atcd set"):
-        if not admin:
-            reply = "[指令] 仅管理员可用"
-        else:
-            reply = _parse_cdset(text, "reply_cooldown_at", "被@回复冷却")
-        await send_group(websocket, group_id, reply)
+        reply = (
+            "[指令] 仅管理员可用" if not admin
+            else await _to_thread(_parse_cdset, text, "reply_cooldown_at", "被@回复冷却")
+        )
+        await reply_msg(reply)
         return True
 
-    # /faver set（仅管理员）
+    # /faver set
     if text.startswith("/faver set"):
         if not admin:
             reply = "[指令] 仅管理员可用"
         else:
             parts = text.split()
-            target = f"group_{group_id}_{parts[2]}" if len(parts) >= 3 else ""
-            reply = _parse_faverset(text, target, parts[2] if len(parts) >= 3 else "")
-        await send_group(websocket, group_id, reply)
+            if in_group:
+                target = f"group_{group_id}_{parts[2]}" if len(parts) >= 3 else ""
+                label = parts[2] if len(parts) >= 3 else ""
+            else:
+                target = parts[2] if len(parts) >= 3 else ""
+                label = target
+            reply = await _to_thread(_parse_faverset, text, target, label)
+        await reply_msg(reply)
         return True
 
-    # /name set（仅管理员）
+    # /name set
     if text.startswith("/name set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_nameset(text)
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_parse_nameset, text)
+        await reply_msg(reply)
         return True
 
-    # /infer set（仅管理员）
+    # /infer set
     if text.startswith("/infer set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_inferset(text)
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_parse_inferset, text)
+        await reply_msg(reply)
         return True
 
-    # /pro set（仅管理员）
+    # /pro set
     if text.startswith("/pro set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_proset(text)
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_parse_proset, text)
+        await reply_msg(reply)
         return True
 
-    # 表情包管理指令（仅管理员）
+    # 表情包管理指令
     if text.startswith("/smode set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_smodeset(text)
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_parse_smodeset, text)
+        await reply_msg(reply)
         return True
 
     if text.startswith("/spro set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_sproset(text)
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_parse_sproset, text)
+        await reply_msg(reply)
         return True
 
     if text.startswith("/scd set"):
-        reply = "[指令] 仅管理员可用" if not admin else _parse_scdset(text)
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_parse_scdset, text)
+        await reply_msg(reply)
         return True
 
     if text in ("/斗图", "/duel"):
-        reply = "[指令] 仅管理员可用" if not admin else _toggle_duel()
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_toggle_duel)
+        await reply_msg(reply)
         return True
 
-    # /bot（仅管理员）
+    # /bot
     if text.startswith("/bot"):
-        reply = "[指令] 仅管理员可用" if not admin else _handle_bot_cmd(text)
-        await send_group(websocket, group_id, reply)
+        reply = "[指令] 仅管理员可用" if not admin else await _to_thread(_handle_bot_cmd, text)
+        await reply_msg(reply)
         return True
 
     # /cmd help
     if text == "/cmd help":
-        await send_group(websocket, group_id, build_help(admin=admin, in_group=True))
+        await reply_msg(build_help(admin=admin, in_group=in_group))
         return True
 
     return False
+
+
+# ===== 兼容旧调用：薄包装转发到统一处理 =====
+async def handle_private_command(websocket, user_id, msg_text, admin, on_rl, on_poke=None):
+    return await handle_command(
+        websocket,
+        {"message_type": "private", "user_id": user_id},
+        msg_text, admin, on_rl, on_poke,
+    )
+
+
+async def handle_group_command(websocket, group_id, user_id, msg_text, admin, on_rl, on_poke=None):
+    return await handle_command(
+        websocket,
+        {"message_type": "group", "group_id": group_id, "user_id": user_id},
+        msg_text, admin, on_rl, on_poke,
+    )

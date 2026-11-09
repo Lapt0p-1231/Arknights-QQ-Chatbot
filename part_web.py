@@ -28,8 +28,21 @@ import part_api
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(BASE_DIR, "QQ-BOT.log")
 INDEX_FILE = os.path.join(BASE_DIR, "webui", "index.html")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+PROACTIVE_REQ_FILE = os.path.join(DATA_DIR, "proactive_request.json")
 
 app = FastAPI(title="QQ-BOT WebUI", docs_url=None, redoc_url=None)
+
+_http_session = None
+
+
+def _get_http_session():
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=30, keepalive_timeout=30)
+        )
+    return _http_session
 
 
 # ====== 请求模型 ======
@@ -55,6 +68,8 @@ class SettingsUpdate(BaseModel):
     quote_threshold: int | None = None
     reply_delay_min: float | None = None
     reply_delay_max: float | None = None
+    max_words: int | None = None
+    vector_min_importance: float | None = None
     sticker_enabled: bool | None = None
     sticker_mode: str | None = None
     sticker_probability: float | None = None
@@ -64,7 +79,8 @@ class SettingsUpdate(BaseModel):
     sticker_capture_enabled: bool | None = None
     sticker_capture_admin_only: bool | None = None
     sticker_capture_probability: float | None = None
-    known_bots: list[str | int] | None = None
+    sticker_autotag_enabled: bool | None = None
+    known_bots: list | None = None
     bot_decay_step: float | None = None
     proactive_enabled: bool | None = None
     proactive_target: str | None = None
@@ -73,6 +89,7 @@ class SettingsUpdate(BaseModel):
     proactive_quiet_start: int | None = None
     proactive_quiet_end: int | None = None
     proactive_group_idle_minutes: float | None = None
+    proactive_type_a_ratio: float | None = None
 
 
 class MusingConfig(BaseModel):
@@ -271,7 +288,7 @@ def status():
         "enabled_prompt_count": sum(
             1 for x in part_prompt.get_prompt_files() if x.get("enabled")
         ),
-        "bot_qq": getattr(part_command, "BOT_QQ", None) or int(os.environ.get("QQ_BOT_QQ", "0")) or None,
+        "bot_qq": settings.get("bot_qq") or int(os.environ.get("QQ_BOT_QQ", "0") or 0),
     }
 
 
@@ -368,6 +385,30 @@ def bot_restart():
     raise HTTPException(500, "机器人启动超时，请查看日志")
 
 
+class ProactivePoke(BaseModel):
+    target_type: str | None = None   # private / group / None(按目标列表)
+    target: str | None = None        # QQ号或群号
+
+
+@app.post("/api/proactive/poke")
+def proactive_poke(body: ProactivePoke | None = None):
+    """向机器人写入一次"立即冒泡"请求，机器人轮询到后强制触发一次主动消息。"""
+    body = body or ProactivePoke()
+    payload = {
+        "queued_at": time.time(),
+        "target_type": (body.target_type or "").strip().lower(),
+        "target": (body.target or "").strip(),
+    }
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = PROACTIVE_REQ_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, PROACTIVE_REQ_FILE)
+    return {"ok": True, "queued_at": payload["queued_at"]}
+
+
 @app.get("/api/settings")
 def get_settings():
     return part_record.load_settings()
@@ -442,6 +483,16 @@ def update_settings(body: SettingsUpdate):
             if not 0 <= value <= 60:
                 raise HTTPException(400, "回复延迟范围 0-60 秒")
             cur[key] = value
+    if "max_words" in data:
+        value = int(data["max_words"])
+        if not 5 <= value <= 2000:
+            raise HTTPException(400, "回复字数上限范围 5-2000")
+        cur["max_words"] = value
+    if "vector_min_importance" in data:
+        value = float(data["vector_min_importance"])
+        if not 0 <= value <= 1:
+            raise HTTPException(400, "向量入库门槛范围 0-1")
+        cur["vector_min_importance"] = value
     if "dive_probability" in data:
         value = float(data["dive_probability"])
         if not 0 <= value <= 100:
@@ -480,6 +531,8 @@ def update_settings(body: SettingsUpdate):
         if not 0 <= value <= 100:
             raise HTTPException(400, "抓取概率范围 0-100")
         cur["sticker_capture_probability"] = value
+    if "sticker_autotag_enabled" in data:
+        cur["sticker_autotag_enabled"] = bool(data["sticker_autotag_enabled"])
     if "known_bots" in data:
         bots = [str(b).strip() for b in data["known_bots"] if str(b).strip()]
         cur["known_bots"] = list(dict.fromkeys(bots))
@@ -517,6 +570,11 @@ def update_settings(body: SettingsUpdate):
         if not 1 <= val <= 1440:
             raise HTTPException(400, "群冷场门槛范围 1-1440 分钟")
         cur["proactive_group_idle_minutes"] = val
+    if "proactive_type_a_ratio" in data:
+        val = float(data["proactive_type_a_ratio"])
+        if not 0 <= val <= 100:
+            raise HTTPException(400, "主动类型比例范围 0-100")
+        cur["proactive_type_a_ratio"] = val
     part_record.save_settings(cur)
     return cur
 
@@ -1026,25 +1084,24 @@ async def model_profile_test(body: ProfileTest):
         payload = {"model": model, "messages": messages, "stream": False, "max_tokens": 64}
         start = time.monotonic()
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    url, json=payload, headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as resp:
-                    raw = await resp.text()
-                    latency = round((time.monotonic() - start) * 1000)
-                    try:
-                        data = json.loads(raw)
-                    except Exception:
-                        return {"ok": False, "latency_ms": latency,
-                                "error": f"HTTP {resp.status}（返回非 JSON，疑似网关错误页）"}
-                    choices = data.get("choices") if isinstance(data, dict) else None
-                    if not choices:
-                        err = data.get("error") if isinstance(data, dict) else None
-                        msg = err.get("message") if isinstance(err, dict) else str(data)[:200]
-                        return {"ok": False, "latency_ms": latency, "error": f"HTTP {resp.status}: {msg}"}
-                    reply = ((choices[0].get("message") or {}).get("content") or "").strip()
-                    return {"ok": True, "latency_ms": latency, "reply": reply[:100]}
+            async with _get_http_session().post(
+                url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                raw = await resp.text()
+                latency = round((time.monotonic() - start) * 1000)
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    return {"ok": False, "latency_ms": latency,
+                            "error": f"HTTP {resp.status}（返回非 JSON，疑似网关错误页）"}
+                choices = data.get("choices") if isinstance(data, dict) else None
+                if not choices:
+                    err = data.get("error") if isinstance(data, dict) else None
+                    msg = err.get("message") if isinstance(err, dict) else str(data)[:200]
+                    return {"ok": False, "latency_ms": latency, "error": f"HTTP {resp.status}: {msg}"}
+                reply = ((choices[0].get("message") or {}).get("content") or "").strip()
+                return {"ok": True, "latency_ms": latency, "reply": reply[:100]}
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError):
             return {"ok": False, "latency_ms": round((time.monotonic() - start) * 1000),
                     "error": f"超时（{timeout}s 内未响应）"}
@@ -1096,9 +1153,14 @@ async def model_profile_test(body: ProfileTest):
 def logs_tail(lines: int = 200):
     if not os.path.isfile(LOG_FILE):
         return {"lines": []}
-    with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read()
-    return {"lines": content.splitlines()[-max(1, min(2000, lines)):]}
+    want = max(1, min(2000, lines))
+    size = os.path.getsize(LOG_FILE)
+    tail_bytes = max(65536, want * 300)
+    with open(LOG_FILE, "rb") as f:
+        f.seek(max(0, size - tail_bytes))
+        data = f.read()
+    content = data.decode("utf-8", "replace")
+    return {"lines": content.splitlines()[-want:]}
 
 
 @app.websocket("/ws/logs")

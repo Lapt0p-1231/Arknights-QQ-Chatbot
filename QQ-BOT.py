@@ -25,18 +25,41 @@ try:
 except Exception:
     pass
 
+# ===== 本地启动配置（bot_settings.json）=====
+def _boot_settings():
+    try:
+        return part_record.load_settings()
+    except Exception:
+        return {}
+
+_BOOT_SETTINGS = _boot_settings()
+
+def _env_int(name, default=0):
+    raw = os.environ.get(name)
+    try:
+        return int(str(raw).strip()) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+def _parse_admin_list():
+    raw = os.environ.get("QQ_BOT_ADMIN_QQ")
+    values = raw.split(",") if raw else (_BOOT_SETTINGS.get("admin_qq") or [])
+    result = []
+    for item in values:
+        try:
+            qq = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if qq and qq not in result:
+            result.append(qq)
+    return result
+
 # ===== 机器人QQ ======
-# 通过环境变量配置，避免把个人账号写进源码
-BOT_QQ = int(os.environ.get("QQ_BOT_QQ", "0"))
+BOT_QQ = _env_int("QQ_BOT_QQ", _BOOT_SETTINGS.get("bot_qq") or 0)
 # ====================
 
 # ===== 管理员QQ =====
-# 多个管理员用英文逗号分隔，例如：QQ_BOT_ADMIN_QQ=123456,654321
-ADMIN_QQ = [
-    int(item.strip())
-    for item in os.environ.get("QQ_BOT_ADMIN_QQ", "").split(",")
-    if item.strip().isdigit()
-]
+ADMIN_QQ = _parse_admin_list()
 # ====================
 
 # ===== 提及触发 =====
@@ -119,6 +142,9 @@ def log(text):
             f.write(line + "\n")
     except Exception:
         pass
+
+# 将主程序 logger 注入子模块，避免子模块 import 连字符模块名失败
+part_sticker.set_logger(log)
 # ====================
 
 # ===== JSON 宽松解析 =====
@@ -307,8 +333,9 @@ def naturalize_chat_text(text):
     return text.strip("，, ")
 # ====================
 
-# ===== 拒答检测辅助 ======
-# 词表保留备用，恢复时在 call_your_api 里加回 is_refusal_text 判断即可。
+# ===== 破甲辅助 ======
+# audit 伪审核包装已移除：实测对 Gemini 4 反效果（模型识破后警觉升级）。
+# 拒答检测同样停用（暂不需要破甲场景）。词表保留备用，恢复时在 call_your_api 里加回 is_refusal_text 判断即可。
 _REFUSAL_MARKERS = (
     "安全准则", "安全策略", "内容政策", "内容准则", "安全指南",
     "作为AI", "作为人工智能", "作为语言模型",
@@ -335,10 +362,9 @@ async def send_wechat_alert(title, content):
     url = f"https://sctapi.ftqq.com/{SERVER_CHAN_KEY}.send"
     payload = {"title": title, "desp": content}
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=payload, timeout=5) as resp:
-                if resp.status == 200:
-                    print("[警告] 微信警告已推送")
+        async with _get_http_session().post(url, data=payload, timeout=5) as resp:
+            if resp.status == 200:
+                print("[警告] 微信警告已推送")
     except Exception as e:
         print(f"[警告] 微信警告推送失败: {e}")
 # ====================
@@ -349,12 +375,12 @@ async def send_wechat_alert(title, content):
 # 下面的常量只是 api.json 缺失时的兜底
 API_URL = "https://api.deepseek.com/chat/completions"
 API_KEY = os.environ.get("QQ_BOT_API_KEY", "")
-JUDGE_MODEL = "deepseek-chat"
-SUMMARY_MODEL = "deepseek-chat"
+JUDGE_MODEL = "deepseek-flash"
+SUMMARY_MODEL = "deepseek-flash"
 
 MAIN_API_URL = "https://api.deepseek.com/chat/completions"
 MAIN_API_KEY = os.environ.get("QQ_BOT_API_KEY", "")
-MAIN_MODEL = "deepseek-chat"
+MAIN_MODEL = "deepseek-flash"
 # ====================
 
 
@@ -366,7 +392,7 @@ MAIN_MODEL = "deepseek-chat"
 # 附属参数
 PROMPT_PARAMS = {
     "fitness": 0.8,   # 人设拟合
-    "max_words": 300, # 字数要求
+    "max_words": 20, # 字数要求（实际值以 bot_settings.json 的 max_words 为准）
 }
 # ====================
 
@@ -445,9 +471,15 @@ def build_user_prompt(user_id, memory, query=None, recall_scopes=None):
         active_prompt = SYSTEM_PROMPT
 
     # 替换附属参数
+    try:
+        max_words = int(part_record.load_settings().get("max_words", PROMPT_PARAMS["max_words"]))
+    except (TypeError, ValueError):
+        max_words = PROMPT_PARAMS["max_words"]
     for key, value in PROMPT_PARAMS.items():
         if key == "fitness":
             continue
+        if key == "max_words":
+            value = max_words
         active_prompt = active_prompt.replace(f"{{{key}}}", str(value))
     active_prompt = active_prompt.replace("{fitness}", str(fitness))
 
@@ -547,8 +579,26 @@ def build_user_prompt(user_id, memory, query=None, recall_scopes=None):
 # =====================
 
 
+# ====== HTTP 连接池 =======
+_http_session = None
+
+
+def _get_http_session():
+    global _http_session
+    if _http_session is None or _http_session.closed:
+        _http_session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=30, keepalive_timeout=30)
+        )
+    return _http_session
+
+
 # ====== API调用 =======
-async def _post_json(payload, api_url=None, api_key=None):
+def _safe_url(api_url):
+    # 只保留协议+主机+路径，丢掉可能带 key 的 query
+    return str(api_url).split("?", 1)[0]
+
+
+async def _post_json(payload, api_url=None, api_key=None, timeout=45):
     if api_url is None:
         api_url = API_URL
     if api_key is None:
@@ -556,18 +606,42 @@ async def _post_json(payload, api_url=None, api_key=None):
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    async with aiohttp.ClientSession() as session:
-        async with session.post(api_url, json=payload, headers=headers) as resp:
-            data = await resp.json()
-            if "choices" not in data:
+    client_timeout = aiohttp.ClientTimeout(total=timeout)
+    try:
+        async with _get_http_session().post(
+            api_url, json=payload, headers=headers, timeout=client_timeout
+        ) as resp:
+            status = resp.status
+            content_type = resp.content_type
+            raw = await resp.text()
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                snippet = (raw or "").strip().replace("\r", " ").replace("\n", " ")[:500]
+                raise RuntimeError(
+                    f"API返回非JSON status={status} content_type={content_type} "
+                    f"url={_safe_url(api_url)} body={snippet or '<空响应体>'!r}"
+                ) from None
+            if not isinstance(data, dict) or "choices" not in data:
                 # 上游报错（限流/参数不支持等）：带状态码和原文抛出，避免裸 KeyError
-                raise RuntimeError(f"API返回异常 status={resp.status} body={json.dumps(data, ensure_ascii=False)[:300]}")
+                raise RuntimeError(
+                    f"API返回异常 status={status} url={_safe_url(api_url)} "
+                    f"body={json.dumps(data, ensure_ascii=False)[:500]}"
+                )
             choice = data["choices"][0]
             content = (choice.get("message") or {}).get("content")
             if content is None:
                 # 安全拦截/空生成时 content 为 null，记下来方便排查拒答
                 log(f"[API] 模型返回空内容 finish_reason={choice.get('finish_reason')}")
             return content
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            f"API请求超时 total>{timeout}s url={_safe_url(api_url)}"
+        ) from None
+    except aiohttp.ClientError as e:
+        raise RuntimeError(
+            f"API网络错误 {type(e).__name__}: {e!r} url={_safe_url(api_url)}"
+        ) from e
 
 
 # ====== 识图 ======
@@ -575,16 +649,16 @@ async def _post_json(payload, api_url=None, api_key=None):
 # 回复时再把原图 base64 喂给主模型
 async def fetch_image_b64(url, timeout=15):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=timeout) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.read()
+        async with _get_http_session().get(url, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.read()
         if not data or len(data) > 8 * 1024 * 1024:
             return None
         return "data:image/jpeg;base64," + base64.b64encode(data).decode()
     except Exception as e:
-        log(f"[识图] 下载图片失败: {e}")
+        detail = str(e).strip() or repr(e)
+        log(f"[识图] 下载图片失败: {type(e).__name__}: {detail}")
         return None
 
 
@@ -601,15 +675,15 @@ async def vision_caption(data_uri):
         "stream": False,
     }
     try:
-        caption = ((await asyncio.wait_for(
-            _post_json(payload, api_url=route.get("url"), api_key=route.get("key")),
-            timeout=30
-        )) or "").strip()
+        caption = (await _post_json(
+            payload, api_url=route.get("url"), api_key=route.get("key"), timeout=30
+        ) or "").strip()
         caption = re.sub(r"\s+", " ", caption)[:60]
         log(f"[识图] 图片描述: {caption}")
         return caption
     except Exception as e:
-        log(f"[识图] 描述生成失败: {e}")
+        detail = str(e).strip() or repr(e)
+        log(f"[识图] 描述生成失败: {type(e).__name__}: {detail}")
         return ""
 
 
@@ -649,6 +723,55 @@ def create_safe_task(coro, label="后台任务"):
             log(f"[{label}] 协程发生异常: {e}")
     task.add_done_callback(_log_exception)
     return task
+
+
+# ====== 会话串行队列 ======
+# 同一个私聊/群聊同一时刻只跑一个任务，避免旧任务用旧快照覆盖新消息。
+_scope_queues = {}
+_scope_workers = {}
+
+
+async def _scope_worker(scope, queue):
+    while True:
+        factory = await queue.get()
+        try:
+            await factory()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log(f"[队列] {scope} 任务异常: {e}")
+        finally:
+            queue.task_done()
+
+
+def enqueue_scope(scope, factory, label="会话任务"):
+    """把协程工厂放进该会话的串行队列（fire-and-forget）。"""
+    queue = _scope_queues.get(scope)
+    if queue is None:
+        queue = asyncio.Queue()
+        _scope_queues[scope] = queue
+        _scope_workers[scope] = create_safe_task(
+            _scope_worker(scope, queue), f"会话队列-{scope}"
+        )
+    queue.put_nowait(factory)
+
+
+async def run_in_scope(scope, factory, label="会话任务"):
+    """入队并等待执行结果（主动搭讪等需要拿到返回值的场景）。"""
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+
+    async def job():
+        if fut.done():
+            return
+        try:
+            fut.set_result(await factory())
+        except Exception as e:
+            if not fut.done():
+                fut.set_exception(e)
+
+    enqueue_scope(scope, job, label)
+    return await fut
 
 
 # ====== OneBot API 调用 ======
@@ -691,8 +814,57 @@ def _segments_to_text(message):
     return "".join(parts).strip()
 
 
+def parse_message_segments(event, bot_qq):
+    """统一解析私聊/群聊消息段，返回文本、图片、引用与 @ 信息。"""
+    result = {
+        "text": "",
+        "image_url": None,
+        "image_is_meme": False,
+        "quoted_id": None,
+        "is_at_me": False,
+    }
+    raw_msg = event.get("message") or []
+    if not isinstance(raw_msg, (list, tuple)):
+        raw_msg = []
+    for seg in raw_msg:
+        if not isinstance(seg, dict):
+            continue
+        seg_type = seg.get("type")
+        seg_data = seg.get("data", {}) or {}
+
+        if seg_type == "at":
+            at_qq = str(seg_data.get("qq", ""))
+            if at_qq == str(bot_qq):
+                result["is_at_me"] = True
+            else:
+                at_name = str(seg_data.get("name") or "").strip()
+                if at_qq.lower() == "all":
+                    result["text"] += "@全体成员 "
+                elif at_name:
+                    result["text"] += f"@{at_name} "
+                elif at_qq:
+                    result["text"] += f"@{at_qq} "
+        elif seg_type == "text":
+            result["text"] += str(seg_data.get("text", ""))
+        elif seg_type == "reply":
+            result["quoted_id"] = seg_data.get("id")
+        elif seg_type == "mface":
+            # 商城表情：url 与 summary 可以同时保留（原分支互斥会丢 summary）
+            if seg_data.get("url") and result["image_url"] is None:
+                result["image_url"] = seg_data["url"]
+                result["image_is_meme"] = True
+            summary = str(seg_data.get("summary") or "").strip()
+            if summary and summary not in result["text"]:
+                result["text"] += summary
+        elif seg_type == "image":
+            if seg_data.get("url") and result["image_url"] is None:
+                result["image_url"] = seg_data["url"]
+                result["image_is_meme"] = str(seg_data.get("sub_type")) == "1"
+    return result
+
+
 async def resolve_quoted_text(websocket, scope, message_id):
-    """引用回复的原文：先查本地历史，查不到再向协议端请求 get_msg。"""
+    """引用回复的原文：先查本地历史，查不到再向 NapCat 要 get_msg。"""
     if not message_id:
         return ""
     text = await asyncio.to_thread(part_record.get_message_content, scope, message_id)
@@ -889,6 +1061,7 @@ async def summarize_memory(user_id, update_favorability=True):
                 log(f"[记忆] 总结提示词已被关闭，跳过 {user_id}")
                 return
             memory = await asyncio.to_thread(part_record.load_user_memory, user_id)
+            epoch0 = await asyncio.to_thread(part_record.get_epoch, user_id)
             history = memory.get("chat_history", [])[-10:]
             if not history:
                 return
@@ -920,6 +1093,11 @@ async def summarize_memory(user_id, update_favorability=True):
             if not isinstance(state, dict):
                 raise ValueError("总结结果不是JSON对象")
 
+            # 情绪/重要度评分与状态在同一次分模型调用中返回
+            valence = max(-1.0, min(1.0, safe_float(state.pop("valence", 0.0), 0.0)))
+            arousal = max(0.0, min(1.0, safe_float(state.pop("arousal", 0.0), 0.0)))
+            importance = max(0.0, min(1.0, safe_float(state.pop("importance", 0.5), 0.5)))
+
             # 好感度（群共享档案不更新）
             favorability = old_favorability
             if update_favorability:
@@ -933,44 +1111,33 @@ async def summarize_memory(user_id, update_favorability=True):
             old_state.pop("short_term", None)
             old_state.pop("favorability", None)
 
-            # 记忆固化：最新一轮切片存向量库 + 情绪/重要度打分
-            # （取代旧的"每10轮压缩长期记忆"，长期记忆由RAG召回承担）
+            # 记忆固化：最新一轮切片存向量库（重要度低于门槛则跳过）
             if len(history) >= 2:
                 last_exchange = history[-2:]
                 exchange_text = "\n".join(
                     f"{'用户' if m.get('role') == 'user' else '你'}：{m.get('content', '')}"
                     for m in last_exchange
                 )
-                valence, arousal, importance = 0.0, 0.0, 0.5
-                score_prompt = load_internal_prompt("10_记忆打分.txt")
-                if score_prompt:
-                    try:
-                        score_payload = {
-                            "model": route.get("model") or SUMMARY_MODEL,
-                            "messages": [
-                                {"role": "system", "content": score_prompt},
-                                {"role": "user", "content": exchange_text}
-                            ],
-                            "stream": False
-                        }
-                        score_raw = await _post_json(score_payload, api_url=route.get("url"), api_key=route.get("key"))
-                        score = parse_json_loose(score_raw)
-                        if not isinstance(score, dict):
-                            raise ValueError("打分结果不是JSON对象")
-                        valence = max(-1.0, min(1.0, safe_float(score.get("valence"), 0.0)))
-                        arousal = max(0.0, min(1.0, safe_float(score.get("arousal"), 0.0)))
-                        importance = max(0.0, min(1.0, safe_float(score.get("importance"), 0.5)))
-                    except Exception as e:
-                        log(f"[记忆] {user_id} 打分失败（用默认值入库）: {e}")
-                await asyncio.to_thread(
-                    part_record.add_vector, user_id, exchange_text,
-                    "dialogue", valence, arousal, importance
-                )
-            # 重新读档再写，避免覆盖总结期间产生的新对话
-            fresh = await asyncio.to_thread(part_record.load_user_memory, user_id)
-            fresh["state"] = old_state
-            fresh["favorability"] = favorability
-            await asyncio.to_thread(part_record.save_user_memory, user_id, fresh)
+                settings = await asyncio.to_thread(part_record.load_settings)
+                min_imp = safe_float(settings.get("vector_min_importance"), 0.35)
+                if importance < min_imp:
+                    log(f"[记忆] {user_id} 本轮重要度 {importance} < 门槛 {min_imp}，跳过向量入库")
+                elif await asyncio.to_thread(part_record.get_epoch, user_id) != epoch0:
+                    log(f"[记忆] {user_id} 期间记忆已被清空，跳过向量写入")
+                else:
+                    await asyncio.to_thread(
+                        part_record.add_vector, user_id, exchange_text,
+                        "dialogue", valence, arousal, importance
+                    )
+            # 只更新档案字段，历史由 append_history 管理，避免旧快照覆盖
+            ok = await asyncio.to_thread(
+                part_record.update_profile, user_id,
+                {"state": old_state, "favorability": favorability},
+                epoch0
+            )
+            if not ok:
+                log(f"[记忆] {user_id} 期间记忆已被清空，放弃写回状态")
+                return
             print(f"[记忆] 用户 {user_id} 的状态已更新，好感度 {favorability}")
 
         except Exception as e:
@@ -979,18 +1146,21 @@ async def summarize_memory(user_id, update_favorability=True):
 
 # 主模型
 
-async def call_your_api(user_id, message, group_id=None, image=None, search_context=None):
+async def call_your_api(user_id, message, group_id=None, image=None, search_context=None,
+                        expected_epoch=None, user_recorded=False):
     route = part_api.get_route("main")
     if not route.get("key"):
         return "[错误] 未配置主模型端点（api.json / WebUI 模型路由）"
 
     settings = part_record.load_settings()
+    sender_epoch = None
     if group_id is not None:
         # 群聊：上下文/状态/回复模式取自群共享档案，好感度等个人参数取自发送者档案
         memory = part_record.load_user_memory(
             f"group_{group_id}", hot_limit=settings.get("hot_context_group", 12)
         )
         sender_mem = part_record.load_user_memory(user_id)
+        sender_epoch = await asyncio.to_thread(part_record.get_epoch, user_id)
         for key in ("user_persona", "fitness", "favorability"):
             memory[key] = sender_mem.get(key)
         # 群聊统一使用默认人格，成员专属人设只在私聊生效（防止不同人设串味污染群上下文）
@@ -1005,7 +1175,8 @@ async def call_your_api(user_id, message, group_id=None, image=None, search_cont
             user_id, hot_limit=settings.get("hot_context_private", 30)
         )
         context = memory.get("chat_history", [])
-        context_includes_message = False
+        # 私聊消息已在入队任务开头写入历史，避免再追加一次
+        context_includes_message = bool(user_recorded)
         recall_scopes = [str(user_id)]
 
 
@@ -1070,6 +1241,8 @@ async def call_your_api(user_id, message, group_id=None, image=None, search_cont
     try:
         reply = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
         reply = strip_trailing_period(clean_reply_format(reply))
+        if memory.get("mode") == "聊天":
+            reply = naturalize_chat_text(reply)
         if not reply:
             # 模型拒答/空回复：静默跳过，不入库不发送，避免 None 污染历史
             log(f"[回复] 模型返回空内容（可能被安全策略拦截），本条跳过 user={user_id}")
@@ -1077,20 +1250,29 @@ async def call_your_api(user_id, message, group_id=None, image=None, search_cont
 
         if group_id is not None:
             # 群聊：回复写入群共享档案，同时记录发送者的个人聊天线（好感度要靠它算）
-            await asyncio.to_thread(
-                part_record.append_group_history, group_id, "assistant", reply
+            ok = await asyncio.to_thread(
+                part_record.append_group_history, group_id, "assistant", reply,
+                expected_epoch=expected_epoch
             )
-            sender_fresh = await asyncio.to_thread(part_record.load_user_memory, user_id)
-            sender_ctx = sender_fresh.get("chat_history", [])
-            sender_ctx.append({"role": "user", "content": message})
-            sender_ctx.append({"role": "assistant", "content": reply})
-            sender_fresh["chat_history"] = sender_ctx[-200:]
-            await asyncio.to_thread(part_record.save_user_memory, user_id, sender_fresh)
+            if not ok:
+                log(f"[记忆] 群 {group_id} 期间记忆被清空，丢弃本条回复写入")
+                return None
+            await asyncio.to_thread(
+                part_record.append_history, user_id, "user", message,
+                expected_epoch=sender_epoch
+            )
+            await asyncio.to_thread(
+                part_record.append_history, user_id, "assistant", reply,
+                expected_epoch=sender_epoch
+            )
         else:
-            context.append({"role": "user", "content": message})
-            context.append({"role": "assistant", "content": reply})
-            memory["chat_history"] = context[-200:]
-            await asyncio.to_thread(part_record.save_user_memory, user_id, memory)
+            ok = await asyncio.to_thread(
+                part_record.append_history, user_id, "assistant", reply,
+                expected_epoch=expected_epoch
+            )
+            if not ok:
+                log(f"[记忆] 用户 {user_id} 期间记忆被清空，丢弃本条回复写入")
+                return None
 
         # 随机延迟（拟人+防风控，可设 0 关闭）
         d_min = float(settings.get("reply_delay_min", REPLY_DELAY_MIN))
@@ -1105,10 +1287,211 @@ async def call_your_api(user_id, message, group_id=None, image=None, search_cont
         return reply
 
     except Exception as e:
-        # API 异常静默跳过：错误文本绝不发进群/私聊，避免"发生错误"刷屏
-        log(f"[错误] 调用API失败 user={user_id}: {e}")
+        # API 异常静默跳过：只记录一行错误，不打印调用栈
+        log(f"[错误] 调用API失败 user={user_id} "
+            f"url={_safe_url(route.get('url') or API_URL)} "
+            f"model={route.get('model') or MAIN_MODEL}: {e}")
         return None
 # =====================
+
+
+# ====== 表情包发布判断 ======
+async def ai_sticker_judge(settings, message, mood, context, reply_text="", taxonomy=None):
+    """用分模型判断这一轮是否适合发表情，返回 {send, emotion, tag} 或 None。
+    taxonomy 可由调用方传入复用，避免一次决策里重复扫描素材。"""
+    prompt = load_internal_prompt("15_表情包判断.txt")
+    if not prompt:
+        return None
+    if taxonomy is None:
+        taxonomy = part_sticker.get_available_sticker_tags()
+    if not taxonomy:
+        return None
+    prompt = prompt.replace("{emotion_list}", taxonomy)
+
+    recent = []
+    for msg in (context or [])[-6:]:
+        if not isinstance(msg, dict) or not msg.get("content"):
+            continue
+        role = "我" if msg.get("role") == "assistant" else "对方"
+        recent.append(f"{role}：{str(msg.get('content')).strip()[:80]}")
+    user_content = (
+        (f"最近对话：\n" + "\n".join(recent) + "\n\n" if recent else "")
+        + f"角色当前心情：{mood or '平静'}\n"
+        + f"对方最新消息：{message}\n"
+        + (f"本轮准备发送的回复：{reply_text}\n" if reply_text else "")
+        + "\n请判断这一轮回复是否适合附带一个表情包，并按格式输出 JSON。"
+    )
+
+    route = part_api.get_route("sub")
+    if not route.get("key"):
+        return None
+    payload = {
+        "model": route.get("model") or SUMMARY_MODEL,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "stream": False,
+    }
+    try:
+        raw = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"), timeout=25)
+        data = parse_json_loose(raw)
+        if not isinstance(data, dict):
+            log(f"[表情] AI判断返回无法解析: {str(raw)[:120]}")
+            return None
+        send = data.get("send")
+        if isinstance(send, str):
+            send = send.strip().lower() in ("true", "1", "yes", "是")
+        emotion = str(data.get("emotion") or "").strip()
+        tag = str(data.get("tag") or "").strip()
+        log(f"[表情] AI判断: send={bool(send)} emotion={emotion or '-'} tag={tag or '-'}")
+        return {"send": bool(send), "emotion": emotion, "tag": tag}
+    except Exception as e:
+        log(f"[表情] AI判断失败: {e}")
+        return None
+
+
+async def decide_sticker(settings, scope, message, mood, context, reply_text=""):
+    """发布判断：AI 走分模型，PY 走概率；共用冷却。"""
+    if not part_sticker.sticker_gate_open(settings, scope):
+        return None
+    available = part_sticker.get_available_buckets()
+    if not available:
+        return None
+    taxonomy = part_sticker.get_available_sticker_tags(available)
+    mode = str(settings.get("sticker_mode", "AI")).upper()
+    if mode == "PY":
+        prob = float(settings.get("sticker_probability", 25.0))
+        if random.random() * 100 >= prob:
+            return None
+        bucket, _ = part_sticker.detect_reply_emotion(mood=mood, text=reply_text or message)
+        if not bucket:
+            return None
+        if bucket not in available:
+            log(f"[表情] PY命中情绪桶={bucket}，但该桶暂无素材，不占用冷却")
+            return None
+        part_sticker.mark_sticker_offer(scope)
+        log(f"[表情] PY判断命中，情绪桶={bucket}")
+        return {"source": "PY", "emotion": bucket, "tag": ""}
+
+    judge = await ai_sticker_judge(settings, message, mood, context, reply_text, taxonomy=taxonomy)
+    if judge is None:
+        # 接口失败/返回不可解析：不占用冷却，下一条正常回复再试
+        return None
+    # 分模型已经花掉了：无论 send 与否都占用冷却，避免"判了不发"导致每条回复都白调
+    part_sticker.mark_sticker_judge(scope)
+    if not judge.get("send"):
+        return None
+    tag = judge.get("tag") or ""
+    bucket = judge.get("emotion") or ""
+    if bucket not in part_sticker.EMOTION_CATEGORIES:
+        # 细标签兜底：模型偶尔把 tag 填进 emotion
+        bucket = part_sticker.FINE_TAG_TO_BUCKET.get(bucket) or part_sticker.FINE_TAG_TO_BUCKET.get(tag) or ""
+        if not bucket:
+            mapped, _ = part_sticker.detect_reply_emotion(keyword=bucket or tag)
+            if mapped:
+                bucket = mapped
+            else:
+                bucket, _ = part_sticker.detect_reply_emotion(mood=mood, text=message)
+    if not bucket:
+        return None
+    if bucket not in available:
+        log(f"[表情] AI判定情绪桶={bucket}，但该桶暂无素材，跳过发送")
+        return None
+    part_sticker.mark_sticker_offer(scope)
+    return {"source": "AI", "emotion": bucket, "tag": tag}
+
+
+async def autotag_one_sticker(entry, settings):
+    """给一个表情条目打标（图片走视觉，mface 走文本摘要）。失败计入重试次数。"""
+    key = entry.get("filename") if entry.get("_kind") == "images" else entry.get("id")
+    if not key:
+        return
+    prompt = load_internal_prompt("16_表情包打标.txt")
+    if not prompt:
+        return
+    route = part_api.get_route("sticker_tag")
+    if not route.get("key"):
+        log("[表情打标] 未配置可用模型，跳过")
+        return
+
+    if entry.get("_kind") == "images":
+        path = await asyncio.to_thread(part_sticker.find_sticker_image_path, key)
+        if not path:
+            attempts = int(entry.get("tag_attempts", 0) or 0) + 1
+            await part_sticker.update_entry_tags(key, {"tag_attempts": attempts})
+            log(f"[表情打标] 文件不存在，跳过 {key}")
+            return
+        try:
+            b64, mime = await asyncio.to_thread(part_sticker.encode_image_for_vision, path)
+        except Exception as e:
+            attempts = int(entry.get("tag_attempts", 0) or 0) + 1
+            await part_sticker.update_entry_tags(key, {"tag_attempts": attempts})
+            log(f"[表情打标] 读取图片失败 {key}（第{attempts}次）: {e}")
+            return
+        user_content = [
+            {"type": "text", "text": "请给这个表情包打标。"},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+        ]
+    else:
+        user_content = (
+            f"这是一个 QQ 商城表情，摘要：{entry.get('summary') or ''}，"
+            f"说明：{entry.get('caption') or ''}。请据此打标。"
+        )
+
+    payload = {
+        "model": route.get("model") or SUMMARY_MODEL,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "stream": False,
+    }
+    try:
+        raw = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"), timeout=60)
+        data = parse_json_loose(raw)
+        if not isinstance(data, dict):
+            raise ValueError("打标结果不是 JSON")
+        emotion = str(data.get("emotion") or "").strip()
+        if emotion not in part_sticker.EMOTION_CATEGORIES:
+            raise ValueError(f"非法 emotion: {emotion}")
+        tags = data.get("tags") or []
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.replace("，", ",").split(",") if t.strip()]
+        tags = [str(t).strip() for t in tags if str(t).strip()][:8]
+        patch = {
+            "emotion": emotion,
+            "tags": tags,
+            "tagged_at": int(time.time()),
+            "autotag_model": route.get("id") or route.get("model") or "",
+        }
+        caption = str(data.get("caption") or "").strip()
+        if caption:
+            patch["caption"] = caption
+        intensity = data.get("intensity")
+        if isinstance(intensity, (int, float)) and not isinstance(intensity, bool):
+            patch["intensity"] = max(0.0, min(1.0, float(intensity)))
+        await part_sticker.update_entry_tags(key, patch)
+        log(f"[表情打标] 完成 {key}: emotion={emotion} tags={tags}")
+    except Exception as e:
+        attempts = int(entry.get("tag_attempts", 0) or 0) + 1
+        await part_sticker.update_entry_tags(key, {"tag_attempts": attempts})
+        log(f"[表情打标] 失败 {key}（第{attempts}次）: {e}")
+
+
+async def sticker_autotag_task():
+    while True:
+        try:
+            settings = await asyncio.to_thread(part_record.load_settings)
+            if settings.get("sticker_autotag_enabled"):
+                entries = await asyncio.to_thread(part_sticker.get_untagged_entries, 1)
+                for entry in entries:
+                    await autotag_one_sticker(entry, settings)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log(f"[表情打标] 任务异常: {e}")
+        await asyncio.sleep(60)
 
 
 # ====== 后台回复 ======
@@ -1128,48 +1511,83 @@ async def send_sticker_message(websocket, sticker_seg, scope_label, group_id=Non
     return False
 
 
-async def reply_private(websocket, user_id, msg_text, image=None, search_context=None, is_duel=False):
+async def reply_private(websocket, user_id, msg_text, image=None, search_context=None,
+                        is_duel=False, message_id=None):
+    scope = f"private_{user_id}"
     try:
         settings = await asyncio.to_thread(part_record.load_settings)
+        epoch0 = await asyncio.to_thread(part_record.get_epoch, str(user_id))
         memory = await asyncio.to_thread(part_record.load_user_memory, str(user_id))
         mood = (memory.get("state") or {}).get("mood", "")
 
         if is_duel:
-            _, sticker_seg = await part_sticker.process_reply_stickers("", f"private_{user_id}", settings, is_duel=True, mood=mood)
+            _, sticker_seg = await part_sticker.process_reply_stickers("", scope, settings, is_duel=True, mood=mood)
             if sticker_seg:
                 await send_sticker_message(websocket, sticker_seg, f"私聊 {user_id}", user_id=user_id)
             return
 
-        reply = await call_your_api(user_id, msg_text, image=image, search_context=search_context)
+        # 在本会话任务开头落 user 消息：同一会话串行处理，历史顺序不会被旧任务覆盖
+        ok = await asyncio.to_thread(
+            part_record.append_history, str(user_id), "user", msg_text,
+            message_id, epoch0
+        )
+        if not ok:
+            log(f"[记忆] 私聊 {user_id} 生成前记忆已被清空，跳过本条")
+            return
+
+        reply = await call_your_api(
+            user_id, msg_text, image=image, search_context=search_context,
+            expected_epoch=epoch0, user_recorded=True
+        )
         if reply is None or reply.startswith("[错误]"):
             return
-        clean_text, sticker_seg = await part_sticker.process_reply_stickers(reply, f"private_{user_id}", settings, mood=mood)
+        sticker_pending = await decide_sticker(
+            settings, scope, msg_text, mood, memory.get("chat_history", []), reply_text=reply
+        )
+        clean_text, sticker_seg = await part_sticker.process_reply_stickers(
+            reply, scope, settings, mood=mood, pending=sticker_pending
+        )
         if clean_text.strip():
+            if await asyncio.to_thread(part_record.get_epoch, str(user_id)) != epoch0:
+                log(f"[记忆] 私聊 {user_id} 发送前记忆已被清空，放弃发送")
+                return
             await part_command.send_private(websocket, user_id, clean_text)
             log(f"[回复] 已回复私聊 {user_id}: {clean_text[:50]}")
         if sticker_seg:
+            if clean_text.strip():
+                # 文字发完稍作停顿再补表情（0.1~0.3 秒，网络差时也不容易被其他消息顶乱）
+                await asyncio.sleep(random.uniform(0.1, 0.3))
             await send_sticker_message(websocket, sticker_seg, f"私聊 {user_id}", user_id=user_id)
         await summarize_memory(str(user_id))
     except Exception as e:
         log(f"[错误] 私聊回复任务异常 user={user_id}: {e}")
 
 
-async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None, search_context=None, is_duel=False):
+async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None,
+                      search_context=None, is_duel=False):
+    scope = f"group_{group_id}"
     try:
         settings = await asyncio.to_thread(part_record.load_settings)
+        epoch0 = await asyncio.to_thread(part_record.get_epoch, scope)
         user_mem = await asyncio.to_thread(part_record.load_user_memory, mem_key)
-        group_mem = await asyncio.to_thread(part_record.load_user_memory, f"group_{group_id}")
+        group_mem = await asyncio.to_thread(part_record.load_user_memory, scope)
         mood = (user_mem.get("state") or {}).get("mood") or (group_mem.get("state") or {}).get("mood", "")
 
         if is_duel:
-            _, sticker_seg = await part_sticker.process_reply_stickers("", f"group_{group_id}", settings, is_duel=True, mood=mood)
+            _, sticker_seg = await part_sticker.process_reply_stickers("", scope, settings, is_duel=True, mood=mood)
             if sticker_seg:
                 await send_sticker_message(websocket, sticker_seg, f"群 {group_id}", group_id=group_id)
             return
 
-        reply = await call_your_api(mem_key, msg_text, group_id=group_id, image=image, search_context=search_context)
+        reply = await call_your_api(
+            mem_key, msg_text, group_id=group_id, image=image,
+            search_context=search_context, expected_epoch=epoch0, user_recorded=True
+        )
         if reply is None or reply.startswith("[错误]"):
             return
+        sticker_pending = await decide_sticker(
+            settings, scope, msg_text, mood, group_mem.get("chat_history", []), reply_text=reply
+        )
         # 引用判断：目标消息距今超过阈值条才引用，避免每条都挂引用
         quote = None
         if reply_to is not None:
@@ -1181,15 +1599,23 @@ async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_
                 quote = reply_to
                 log(f"[引用] 群 {group_id} 目标消息距今 {newer} 条（阈值 {threshold}），引用发送")
 
-        clean_text, sticker_seg = await part_sticker.process_reply_stickers(reply, f"group_{group_id}", settings, mood=mood)
+        clean_text, sticker_seg = await part_sticker.process_reply_stickers(
+            reply, scope, settings, mood=mood, pending=sticker_pending
+        )
         if clean_text.strip():
+            if await asyncio.to_thread(part_record.get_epoch, scope) != epoch0:
+                log(f"[记忆] 群 {group_id} 发送前记忆已被清空，放弃发送")
+                return
             await part_command.send_group(websocket, group_id, clean_text, reply_to=quote)
             log(f"[回复] 已回复群 {group_id}: {clean_text[:50]}")
         if sticker_seg:
+            if clean_text.strip():
+                # 文字发完稍作停顿再补表情（0.1~0.3 秒，网络差时也不容易被其他消息顶乱）
+                await asyncio.sleep(random.uniform(0.1, 0.3))
             await send_sticker_message(websocket, sticker_seg, f"群 {group_id}", group_id=group_id)
         # 发送者个人档案（算好感度）和群共享档案（记群状态，不算好感度）都要总结
         await summarize_memory(mem_key)
-        await summarize_memory(f"group_{group_id}", update_favorability=False)
+        await summarize_memory(scope, update_favorability=False)
     except Exception as e:
         log(f"[错误] 群聊回复任务异常 group={group_id}: {e}")
 # =====================
@@ -1248,33 +1674,15 @@ async def handler(websocket):
                         should_capture = admin
                     else:
                         should_capture = admin or (random.random() * 100 < _cap_prob)
-                if should_capture:
-                    create_safe_task(part_sticker.capture_from_event(event), "表情捕获")
 
                 # ===== 私聊消息 ======
                 if event.get("message_type") == "private":
                     user_id = event["user_id"]
-                    msg_text = ""
-                    image_url = None
-                    image_is_meme = False
-                    quoted_id = None
-                    for seg in event.get("message", []):
-                        if seg.get("type") == "text":
-                            msg_text += seg.get("data", {}).get("text", "")
-                        elif seg.get("type") == "reply":
-                            quoted_id = seg.get("data", {}).get("id")
-                        elif seg.get("type") == "mface":
-                            seg_data = seg.get("data", {})
-                            if seg_data.get("url") and image_url is None:
-                                image_url = seg_data["url"]
-                                image_is_meme = True
-                            if not msg_text and seg_data.get("summary"):
-                                msg_text = seg_data.get("summary")
-                        elif image_url is None and seg.get("type") == "image":
-                            seg_data = seg.get("data", {})
-                            if seg_data.get("url"):
-                                image_url = seg_data["url"]
-                                image_is_meme = str(seg_data.get("sub_type")) == "1"
+                    parsed = parse_message_segments(event, BOT_QQ)
+                    msg_text = parsed["text"]
+                    image_url = parsed["image_url"]
+                    image_is_meme = parsed["image_is_meme"]
+                    quoted_id = parsed["quoted_id"]
 
                     if not msg_text.strip() and not image_url:
                         continue
@@ -1287,15 +1695,36 @@ async def handler(websocket):
                     )
 
                     # 先过指令
-                    if await part_command.handle_private_command(
-                        websocket, user_id, msg_text, admin,
-                        lambda m: create_safe_task(reply_private(websocket, user_id, m), "私聊回复"),
+                    def _on_private_rl():
+                        async def job():
+                            popped = await asyncio.to_thread(
+                                part_record.pop_last_turn, str(user_id)
+                            )
+                            if not popped:
+                                await part_command.send_private(
+                                    websocket, user_id, "[指令] 没有可以重新生成的对话"
+                                )
+                                return
+                            last_msg, last_mid = popped
+                            await asyncio.to_thread(
+                                part_record.delete_last_vector, str(user_id)
+                            )
+                            await reply_private(
+                                websocket, user_id, last_msg, message_id=last_mid
+                            )
+                        enqueue_scope(f"private_{user_id}", job, "私聊重生成")
+
+                    if await part_command.handle_command(
+                        websocket, event, msg_text, admin,
+                        _on_private_rl,
                         on_poke=lambda: create_safe_task(generate_and_send_proactive_message(force=True, specified_user_id=user_id), "主动搭讪测试")
                     ):
                         continue
 
                     print(f"收到私聊消息: {msg_text}")
                     if settings.get("sticker_capture_only", False):
+                        if should_capture:
+                            create_safe_task(part_sticker.capture_from_event(event), "表情捕获")
                         log(f"[表情] 当前处于「纯捕获模式」，已捕获表情，跳过回复私聊 {user_id}")
                         continue
 
@@ -1309,12 +1738,14 @@ async def handler(websocket):
                     _last_reply_time[rate_key] = now
                     # 识图：被冷却跳过的消息不做识别，省调用
                     record_text, vision_image = msg_text.strip(), None
+                    cap = None
                     if image_url:
                         tag, vision_image = await prepare_vision(image_url, image_is_meme, settings, admin)
                         record_text = (record_text + tag).strip()
-                        if should_capture and tag.startswith(("[表情包：", "[图片：")) and tag.endswith("]"):
+                        if tag.startswith(("[表情包：", "[图片：")) and tag.endswith("]"):
                             cap = tag[5:-1]
-                            create_safe_task(part_sticker.capture_from_event(event, caption=cap), "表情捕获")
+                    if should_capture:
+                        create_safe_task(part_sticker.capture_from_event(event, caption=cap), "表情捕获")
                     if quoted_id:
                         quoted = await resolve_quoted_text(websocket, str(user_id), quoted_id)
                         if quoted:
@@ -1334,7 +1765,14 @@ async def handler(websocket):
                         search_query = await extract_search_query_private(user_id, msg_text)
                     search_ctx = await run_search(search_scope, search_query, settings)
                     is_duel = part_sticker.is_incoming_pure_sticker(event) and settings.get("sticker_duel_mode", False)
-                    create_safe_task(reply_private(websocket, user_id, record_text, vision_image, search_ctx, is_duel=is_duel), "私聊回复")
+                    enqueue_scope(
+                        f"private_{user_id}",
+                        lambda: reply_private(
+                            websocket, user_id, record_text, vision_image,
+                            search_ctx, is_duel=is_duel, message_id=mid
+                        ),
+                        "私聊回复"
+                    )
 
                 # ===== 群聊消息 ======
                 elif event.get("message_type") == "group":
@@ -1353,40 +1791,12 @@ async def handler(websocket):
                         part_record.effective_at_only, settings, f"group_{group_id}"
                     )
 
-                    is_at_me = False
-                    msg_text = ""
-                    image_url = None
-                    image_is_meme = False
-                    quoted_id = None
-
-                    for seg in event.get("message", []):
-                        if seg.get("type") == "at":
-                            # 判断@：@自己标记触发；@别人必须保留到文本里，否则模型会误以为在问自己
-                            at_qq = str(seg.get("data", {}).get("qq", ""))
-                            if at_qq == str(BOT_QQ):
-                                is_at_me = True
-                            else:
-                                at_data = seg.get("data", {})
-                                at_name = str(at_data.get("name") or "").strip()
-                                if at_qq.lower() == "all":
-                                    msg_text += "@全体成员 "
-                                elif at_name:
-                                    msg_text += f"@{at_name} "
-                                elif at_qq:
-                                    msg_text += f"@{at_qq} "
-                        elif seg.get("type") == "text":
-                            msg_text += seg.get("data", {}).get("text", "")
-                        elif seg.get("type") == "reply":
-                            quoted_id = seg.get("data", {}).get("id")
-                        elif image_url is None and seg.get("type") in ("image", "mface"):
-                            seg_data = seg.get("data", {})
-                            if seg_data.get("url"):
-                                image_url = seg_data["url"]
-                                image_is_meme = seg.get("type") == "mface" or str(seg_data.get("sub_type")) == "1"
-                        elif seg.get("type") == "mface":
-                            seg_data = seg.get("data", {})
-                            if not msg_text and seg_data.get("summary"):
-                                msg_text = seg_data.get("summary")
+                    parsed = parse_message_segments(event, BOT_QQ)
+                    is_at_me = parsed["is_at_me"]
+                    msg_text = parsed["text"]
+                    image_url = parsed["image_url"]
+                    image_is_meme = parsed["image_is_meme"]
+                    quoted_id = parsed["quoted_id"]
 
                     if not msg_text.strip() and not image_url:
                         continue
@@ -1409,9 +1819,38 @@ async def handler(websocket):
                             log(f"[指令] 忽略来自已知机器人 {user_id} 的指令: {msg_text.strip()[:30]}")
                             continue
                         mem_key = f"group_{group_id}_{user_id}"
-                        if await part_command.handle_group_command(
-                            websocket, group_id, user_id, msg_text, admin,
-                            lambda m: create_safe_task(reply_group(websocket, group_id, mem_key, m), "群聊回复"),
+
+                        def _on_group_rl(mem_key=mem_key):
+                            async def job():
+                                popped_group = await asyncio.to_thread(
+                                    part_record.pop_last_turn, f"group_{group_id}"
+                                )
+                                popped_member = await asyncio.to_thread(
+                                    part_record.pop_last_turn, mem_key
+                                )
+                                popped = popped_group or popped_member
+                                if not popped:
+                                    await part_command.send_group(
+                                        websocket, group_id, "[指令] 没有可以重新生成的对话"
+                                    )
+                                    return
+                                last_msg, last_mid = popped
+                                await asyncio.to_thread(
+                                    part_record.delete_last_vector, f"group_{group_id}"
+                                )
+                                await asyncio.to_thread(
+                                    part_record.delete_last_vector, mem_key
+                                )
+                                await asyncio.to_thread(
+                                    part_record.append_group_history, group_id, "user",
+                                    last_msg, message_id=last_mid
+                                )
+                                await reply_group(websocket, group_id, mem_key, last_msg)
+                            enqueue_scope(f"group_{group_id}", job, "群聊重生成")
+
+                        if await part_command.handle_command(
+                            websocket, event, msg_text, admin,
+                            _on_group_rl,
                             on_poke=lambda: create_safe_task(
                                 generate_and_send_proactive_message(force=True, specified_group_id=group_id),
                                 "群主动冒泡测试"
@@ -1420,6 +1859,8 @@ async def handler(websocket):
                             continue
 
                     if settings.get("sticker_capture_only", False):
+                        if should_capture:
+                            create_safe_task(part_sticker.capture_from_event(event), "表情捕获")
                         log(f"[表情] 当前处于「纯捕获模式」，已捕获表情，跳过回复群聊 {group_id}")
                         continue
 
@@ -1437,12 +1878,14 @@ async def handler(websocket):
                     # 闲聊消息写入群共享上下文（识图 caption / 引用原文一并写入，后续消息才能看懂语境）
                     # 冷却期内只入档案：不做识图（分模型调用），图片按纯文本入库
                     record_text, vision_image = msg_text.strip(), None
+                    cap = None
                     if image_url and not in_cooldown:
                         tag, vision_image = await prepare_vision(image_url, image_is_meme, settings, admin)
                         record_text = (record_text + tag).strip()
-                        if should_capture and tag.startswith(("[表情包：", "[图片：")) and tag.endswith("]"):
+                        if tag.startswith(("[表情包：", "[图片：")) and tag.endswith("]"):
                             cap = tag[5:-1]
-                            create_safe_task(part_sticker.capture_from_event(event, caption=cap), "表情捕获")
+                    if should_capture:
+                        create_safe_task(part_sticker.capture_from_event(event, caption=cap), "表情捕获")
                     if quoted_id:
                         quoted = await resolve_quoted_text(websocket, f"group_{group_id}", quoted_id)
                         if quoted:
@@ -1519,10 +1962,15 @@ async def handler(websocket):
                     _last_reply_time[rate_key] = now
                     search_ctx = await run_search(f"group_{group_id}", search_query, settings)
                     is_duel = part_sticker.is_incoming_pure_sticker(event) and settings.get("sticker_duel_mode", False)
-                    create_safe_task(reply_group(
-                        websocket, group_id, f"group_{group_id}_{user_id}", record_text,
-                        image=vision_image, reply_to=mid, search_context=search_ctx, is_duel=is_duel
-                    ), "群聊回复")
+                    enqueue_scope(
+                        f"group_{group_id}",
+                        lambda: reply_group(
+                            websocket, group_id, f"group_{group_id}_{user_id}", record_text,
+                            image=vision_image, reply_to=mid, search_context=search_ctx,
+                            is_duel=is_duel
+                        ),
+                        "群聊回复"
+                    )
     except Exception as e:
         log(f"[错误] 连接断开或发生异常: {e}")
         await send_wechat_alert("死老冯腾讯可能又风控了",f"处理消息时发生异常：{e}")
@@ -1534,6 +1982,58 @@ async def handler(websocket):
 
 # ====== 主动私聊搭讪系统（双轨：记忆发散睹物思人 + 时态日常碎碎念） ======
 _last_proactive_time = 0.0
+PROACTIVE_REQ_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "proactive_request.json")
+PROACTIVE_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "proactive_state.json")
+PROACTIVE_POKE_TICK = 3  # WebUI 冒泡测试请求轮询周期（秒）
+PROACTIVE_MEMORY_MIN_AGE = 7200  # 记忆发散只引用 2 小时前的往事，避免刚聊完就"突然想起"
+
+
+def _load_proactive_state():
+    try:
+        with open(PROACTIVE_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_proactive_state(state):
+    try:
+        os.makedirs(os.path.dirname(PROACTIVE_STATE_FILE), exist_ok=True)
+        tmp = PROACTIVE_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+        os.replace(tmp, PROACTIVE_STATE_FILE)
+    except Exception:
+        pass
+
+
+def _load_proactive_time():
+    return float(_load_proactive_state().get("last_proactive_time") or 0.0)
+
+
+def _save_proactive_time(ts):
+    state = _load_proactive_state()
+    state["last_proactive_time"] = ts
+    _save_proactive_state(state)
+
+
+def _get_last_proactive_sent(scope):
+    sent = _load_proactive_state().get("last_sent") or {}
+    try:
+        return float(sent.get(str(scope), 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _mark_proactive_sent(scope):
+    state = _load_proactive_state()
+    sent = state.get("last_sent")
+    if not isinstance(sent, dict):
+        sent = {}
+    sent[str(scope)] = time.time()
+    state["last_sent"] = sent
+    _save_proactive_state(state)
 
 def is_in_quiet_hours(settings):
     try:
@@ -1572,161 +2072,216 @@ def parse_proactive_targets(raw):
     return targets
 
 
+PROACTIVE_PROMPT_FILE = "13_主动搭话.txt"
+PROACTIVE_MODE_LABELS = {
+    "private_a": "类型A·记忆发散",
+    "private_b": "类型B·时态情绪",
+    "group_a": "类型A·群往事发散",
+    "group_b": "类型B·群时态冒泡",
+}
+
+
+def load_proactive_prompts():
+    """读取 prompts/13_主动搭话.txt，按 [section] 拆分成字典。"""
+    raw = part_prompt.internal_prompt(PROACTIVE_PROMPT_FILE)
+    sections = {}
+    current = None
+    buf = []
+    for line in (raw or "").splitlines():
+        m = re.match(r"^\[([A-Za-z0-9_]+)\]\s*$", line.strip())
+        if m:
+            if current:
+                sections[current] = "\n".join(buf).strip()
+            current = m.group(1)
+            buf = []
+        elif current:
+            buf.append(line)
+    if current:
+        sections[current] = "\n".join(buf).strip()
+    return sections
+
+
 async def _proactive_generate_text(settings, kind, memory, memory_scope):
-    """生成一条主动消息文本，返回 (文本, 模式标签)。kind = private / group。"""
+    """生成一条主动消息文本，返回 (文本, 模式标签, 心情)。"""
     time_desc = get_current_time_desc()
     state_mood = (memory.get("state") or {}).get("mood", "")
+
     min_imp = safe_float(settings.get("musing_min_importance"), 0.4)
     memories = await asyncio.to_thread(
-        part_record.get_high_importance_memories, 1, min_imp, memory_scope
+        part_record.get_high_importance_memories, 1, min_imp, memory_scope,
+        time.time() - PROACTIVE_MEMORY_MIN_AGE
     )
-    use_type_a = bool(memories) and random.random() < 0.5
+    type_a_ratio = safe_float(settings.get("proactive_type_a_ratio"), 50.0)
+    type_a_ratio = max(0.0, min(100.0, type_a_ratio))
+    use_type_a = bool(memories) and (random.random() * 100 < type_a_ratio)
     past_memory = memories[0][2] if use_type_a else ""
 
     memory = dict(memory)
     if kind == "group":
         memory["character_prompt"] = ""
+    # 主动消息不继承上一幕的场景状态（地点/动作/在场），否则模型会顺着上一段剧情续写
+    state = dict(memory.get("state") or {})
+    memory["state"] = {"mood": state.get("mood")} if state.get("mood") else {}
     active_prompt = build_user_prompt(memory_scope, memory)
 
-    if kind == "group":
-        if use_type_a:
-            mode_label = "类型A·群往事发散"
-            instruction = (
-                f"\n\n# 主动群聊冒泡指令（群往事发散型）\n"
-                f"你现在闲着，当前现实时间是 {time_desc}，你突然想起这个群里以前聊过的这件往事：\n"
-                f"【往事】：{past_memory}\n\n"
-                "你决定在群里冒个泡，顺着这件往事自然开启一句（就像群友突然想起旧话题）。\n"
-                "要求：\n"
-                "1. 完全符合你的角色性格口吻，像真实的群聊发言。\n"
-                "2. 严格控制在25字以内。\n"
-                "3. 绝对不要复述往事原文，严禁客服腔，不要机械问好。\n"
-                "4. 只输出要发到群里的那一句话，不要任何解释、标号或内心独白！"
-            )
-        else:
-            mode_label = "类型B·群时态冒泡"
-            instruction = (
-                f"\n\n# 主动群聊冒泡指令（日常时态与情绪碎碎念）\n"
-                f"你现在闲着，当前现实时间是 {time_desc}，群里最近有点冷清，你决定冒个泡。\n"
-                + (f"你当前的心情/状态是：{state_mood}。\n" if state_mood else "")
-                + "要求：\n"
-                "1. 完全符合你的角色性格口吻，像真实群友随手发的一条群消息。\n"
-                "2. 结合当下时间段（早晨、午后摸鱼、晚饭后、深夜等）或无聊发呆的状态，发一句简短的群聊消息（严格25字以内）。\n"
-                "   例如：“这个点群里怎么这么安静”、“（冒泡）下午三点，都起来摸摸鱼啊”、“大半夜的还有夜猫子不睡？”\n"
-                "3. 严禁客服腔，不要像AI助手，不要机械问好。\n"
-                "4. 只输出要发到群里的那一句话，不要任何解释、标号或内心独白！"
-            )
-    else:
-        if use_type_a:
-            mode_label = "类型A·记忆发散"
-            instruction = (
-                f"\n\n# 主动发消息指令（记忆发散型）\n"
-                f"你现在处于空闲状态，当前时间是 {time_desc}，突然回忆起了关于对方的这件往事：\n"
-                f"【往事】：{past_memory}\n\n"
-                "你决定主动给对方发一条私聊（就像朋友突然想起以前聊过的事找对方搭话）。\n"
-                "要求：\n"
-                "1. 必须完全符合你的角色性格口吻，语气自然随性，就像微信/QQ真实聊天。\n"
-                "2. 顺着这件往事开启一句简短的新私聊（严格控制在25字以内）。\n"
-                "   例如：“突然想起来，上次你提过的那家店叫什么来着？”、“今天听歌莫名想起来你之前推荐的那首了”。\n"
-                "3. 绝对不要复述往事原文，严禁客服腔，不要机械问好。\n"
-                "4. 只输出要发给对方的那句话，不要输出任何多余的解释、标号或内心独白！"
-            )
-        else:
-            mode_label = "类型B·时态情绪"
-            instruction = (
-                f"\n\n# 主动发消息指令（日常时态与情绪碎碎念）\n"
-                f"你现在闲下来了，当前现实时间是：{time_desc}。\n"
-                + (f"你当前的心情/状态是：{state_mood}。\n" if state_mood else "")
-                + "你决定主动在QQ私聊给对方发一句简短的搭讪、碎碎念或戳一戳（就像关系不错的朋友在无聊或特定时段随手发一句）。\n"
-                "要求：\n"
-                "1. 必须完全符合你的角色性格口吻（傲娇/慵懒/天才奸商等，自然流露）。\n"
-                "2. 结合当下的真实时间段（早晨、午后摸鱼、晚饭后、深夜等）或当下无聊发呆的状态，发一句简短的私聊（严格控制在25字以内）。\n"
-                "   例如：“（戳了戳）好无聊啊，你今天很忙吗？”、“下午三点……有点犯困，你在干嘛呢”、“这个点居然还在工作？别猝死了”。\n"
-                "3. 严禁客服腔，不要像AI助手，就像真实QQ好友随手敲出的一句话。\n"
-                "4. 只输出要发给对方的那句话，不要输出任何多余的解释、标号或内心独白！"
-            )
+    prompts = load_proactive_prompts()
+    key = f"{kind}_{'a' if use_type_a else 'b'}"
+    mode_label = PROACTIVE_MODE_LABELS.get(key, "主动消息")
+    section = prompts.get(key, "")
+    if not section:
+        log(f"[主动] 提示词 {PROACTIVE_PROMPT_FILE} 缺少段落 [{key}] 或文件未启用，跳过")
+        return "", "提示词缺失", state_mood
+    mood_hint = f"你当前的心情/状态是：{state_mood}。\n" if state_mood else ""
+    instruction = "\n\n" + (
+        section.replace("{time_desc}", time_desc)
+        .replace("{past_memory}", past_memory)
+        .replace("{mood_hint}", mood_hint)
+    )
+
+    # 最近记录只作为“背景资料”塞进 system，不作为对话轮次，
+    # 否则模型会自然地把最后一条当成待续写/待回复的内容。
+    recent_lines = []
+    for msg in memory.get("chat_history", [])[-8:]:
+        if isinstance(msg, dict) and msg.get("content"):
+            if msg.get("role") == "assistant":
+                who = "我"
+            else:
+                who = "群友" if kind == "group" else "对方"
+            recent_lines.append(f"{who}：{str(msg.get('content')).strip()}")
+    background = ""
+    if recent_lines:
+        background = (
+            "\n\n# 最近的聊天记录（仅用于了解气氛，不是让你续写或回复）\n"
+            + "\n".join(recent_lines)
+        )
+
+    anti_continue = "\n\n" + prompts.get("common", "")
+    user_prompt = prompts.get("user_prompt") or "请输出你要主动发出去的这一句话："
 
     route = part_api.get_route("main")
-    messages = [{"role": "system", "content": active_prompt + instruction}]
-    for msg in memory.get("chat_history", [])[-12:]:
-        if isinstance(msg, dict) and msg.get("content"):
-            messages.append({"role": msg.get("role", "user"), "content": msg.get("content")})
-    messages.append({"role": "user", "content": "请输出你要发出去的这一句话："})
+    messages = [
+        {"role": "system", "content": active_prompt + instruction + anti_continue + background},
+        {"role": "user", "content": user_prompt},
+    ]
 
     payload = {
         "model": route.get("model") or MAIN_MODEL,
         "messages": messages,
-        "stream": False
+        "stream": False,
+        "temperature": 1.0,
     }
     raw = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
     text = strip_trailing_period(clean_reply_format(raw or ""))
+    if memory.get("mode") == "聊天":
+        text = naturalize_chat_text(text)
     if len(text) > 60:
         text = text[:50]
     return text, mode_label, state_mood
 
 
 async def _send_proactive_private(settings, target_qq, force):
+    scope = str(target_qq)
+    if not force:
+        last_sent = _get_last_proactive_sent(scope)
+        if last_sent:
+            last_user = await asyncio.to_thread(
+                part_record.get_last_history_ts, scope, "user"
+            )
+            if last_user <= last_sent:
+                return "上次主动后用户未再发言，跳过"
+    epoch0 = await asyncio.to_thread(part_record.get_epoch, scope)
     memory = await asyncio.to_thread(
-        part_record.load_user_memory, str(target_qq), settings.get("hot_context_private", 30)
+        part_record.load_user_memory, scope, settings.get("hot_context_private", 30)
     )
-    text, mode_label, mood = await _proactive_generate_text(settings, "private", memory, str(target_qq))
+    text, mode_label, mood = await _proactive_generate_text(
+        settings, "private", memory, scope
+    )
     if not text:
         return "生成内容为空"
     clean_text, sticker_seg = await part_sticker.process_reply_stickers(
         text, f"private_{target_qq}", settings, mood=mood
     )
-    if clean_text.strip():
-        await part_command.send_private(_active_ws, target_qq, clean_text)
-        log(f"[主动] 已主动向私聊 {target_qq} 发送 ({mode_label}): {clean_text}")
+    if not clean_text.strip():
+        return "生成内容为空"
+    if await asyncio.to_thread(part_record.get_epoch, scope) != epoch0:
+        log(f"[主动] 私聊 {target_qq} 期间记忆已被清空，放弃发送")
+        return "记忆已清空，跳过"
+    await part_command.send_private(_active_ws, target_qq, clean_text)
+    _mark_proactive_sent(scope)
+    log(f"[主动] 已主动向私聊 {target_qq} 发送 ({mode_label}): {clean_text}")
     if sticker_seg:
         await send_sticker_message(_active_ws, sticker_seg, f"私聊 {target_qq}", user_id=target_qq)
     # 写入热记忆，保证对方回复时对话连贯
-    fresh = await asyncio.to_thread(part_record.load_user_memory, str(target_qq))
-    ctx = fresh.get("chat_history", [])
-    ctx.append({"role": "assistant", "content": clean_text or text})
-    fresh["chat_history"] = ctx[-200:]
-    await asyncio.to_thread(part_record.save_user_memory, str(target_qq), fresh)
-    log(f"[主动] 已将主动消息写入私聊 {target_qq} 的热记忆上下文")
+    ok = await asyncio.to_thread(
+        part_record.append_history, scope, "assistant", clean_text,
+        expected_epoch=epoch0
+    )
+    if ok:
+        log(f"[主动] 已将主动消息写入私聊 {target_qq} 的热记忆上下文")
+    else:
+        log(f"[主动] 私聊 {target_qq} 期间记忆已被清空，未写入历史")
     return f"已发送({mode_label}): {clean_text}"
 
 
 async def _send_proactive_group(settings, group_id, force):
+    scope = f"group_{group_id}"
     if not force:
-        last_role, last_ts = await asyncio.to_thread(
-            part_record.get_last_history_info, f"group_{group_id}"
+        last_sent = _get_last_proactive_sent(scope)
+        if last_sent:
+            last_user = await asyncio.to_thread(
+                part_record.get_last_history_ts, scope, "user"
+            )
+            if last_user <= last_sent:
+                return "上次冒泡后无人接话，跳过"
+        _, last_ts = await asyncio.to_thread(
+            part_record.get_last_history_info, scope
         )
         idle_min = float(settings.get("proactive_group_idle_minutes", 30.0))
         if last_ts and (time.time() - last_ts) < idle_min * 60:
             return f"群内仍活跃(需静默{idle_min:g}分钟)"
-        if last_role == "assistant":
-            return "上一条是自己发言，跳过防自言自语"
+    epoch0 = await asyncio.to_thread(part_record.get_epoch, scope)
     memory = await asyncio.to_thread(
-        part_record.load_user_memory, f"group_{group_id}", settings.get("hot_context_group", 12)
+        part_record.load_user_memory, scope, settings.get("hot_context_group", 12)
     )
-    text, mode_label, mood = await _proactive_generate_text(settings, "group", memory, f"group_{group_id}")
+    text, mode_label, mood = await _proactive_generate_text(
+        settings, "group", memory, scope
+    )
     if not text:
         return "生成内容为空"
     clean_text, sticker_seg = await part_sticker.process_reply_stickers(
         text, f"group_{group_id}", settings, mood=mood
     )
-    if clean_text.strip():
-        await part_command.send_group(_active_ws, group_id, clean_text)
-        log(f"[主动] 已主动向群 {group_id} 冒泡 ({mode_label}): {clean_text}")
+    if not clean_text.strip():
+        return "生成内容为空"
+    if await asyncio.to_thread(part_record.get_epoch, scope) != epoch0:
+        log(f"[主动] 群 {group_id} 期间记忆已被清空，放弃发送")
+        return "记忆已清空，跳过"
+    await part_command.send_group(_active_ws, group_id, clean_text)
+    _mark_proactive_sent(scope)
+    log(f"[主动] 已主动向群 {group_id} 冒泡 ({mode_label}): {clean_text}")
     if sticker_seg:
         await send_sticker_message(_active_ws, sticker_seg, f"群 {group_id}", group_id=group_id)
     # 写入群共享历史，群友接话时可顺畅延续
-    await asyncio.to_thread(
-        part_record.append_group_history, group_id, "assistant", clean_text or text
+    ok = await asyncio.to_thread(
+        part_record.append_group_history, group_id, "assistant", clean_text,
+        expected_epoch=epoch0
     )
-    log(f"[主动] 已将主动冒泡写入群 {group_id} 的共享历史")
+    if ok:
+        log(f"[主动] 已将主动冒泡写入群 {group_id} 的共享历史")
+    else:
+        log(f"[主动] 群 {group_id} 期间记忆已被清空，未写入历史")
     return f"已发送({mode_label}): {clean_text}"
 
 
-async def generate_and_send_proactive_message(force=False, specified_user_id=None, specified_group_id=None):
+async def generate_and_send_proactive_message(force=False, specified_user_id=None, specified_group_id=None, only_kind=None):
     """
     主动搭讪系统（双轨：记忆发散 + 时态自发），支持私聊与群聊多目标。
     force=True 用于管理员指令/调试即时测试，绕过勿扰、频率与群活跃检查。
+    only_kind: 只处理指定类型的目标（private / group），用于 WebUI 测试按钮。
     """
     global _last_proactive_time
+    if _last_proactive_time <= 0:
+        _last_proactive_time = _load_proactive_time()
     if not _active_ws:
         return "WebSocket 客户端未连接，无法发送"
 
@@ -1749,7 +2304,9 @@ async def generate_and_send_proactive_message(force=False, specified_user_id=Non
         targets = [("group", str(specified_group_id))]
     else:
         targets = parse_proactive_targets(settings.get("proactive_target", ""))
-        if not targets and ADMIN_QQ:
+        if only_kind in ("private", "group"):
+            targets = [t for t in targets if t[0] == only_kind]
+        if not targets and ADMIN_QQ and only_kind in (None, "private"):
             targets = [("private", str(ADMIN_QQ[0]))]
     if not targets:
         return "未指定目标（私聊填QQ，群聊填 group_群号，逗号分隔）"
@@ -1759,25 +2316,77 @@ async def generate_and_send_proactive_message(force=False, specified_user_id=Non
         roll = random.random() * 100.0
         if roll >= prob:
             _last_proactive_time = now
+            _save_proactive_time(now)
             log(f"[主动] 本轮掷出 {roll:.1f}% >= {prob:g}%，跳过主动搭讪")
             return "掷骰未命中"
 
     _last_proactive_time = now
+    _save_proactive_time(now)
     log(f"[主动] 触发主动搭讪流程，目标: {', '.join(f'{k}:{t}' for k, t in targets)}")
 
     results = []
     for kind, target in targets:
         try:
             if kind == "private":
-                r = await _send_proactive_private(settings, target, force)
+                r = await run_in_scope(
+                    f"private_{target}",
+                    lambda t=target: _send_proactive_private(settings, t, force),
+                    "主动私聊"
+                )
             else:
-                r = await _send_proactive_group(settings, target, force)
+                r = await run_in_scope(
+                    f"group_{target}",
+                    lambda t=target: _send_proactive_group(settings, t, force),
+                    "主动群聊"
+                )
             results.append(f"{target}->{r}")
+        except asyncio.TimeoutError:
+            log(f"[主动] 目标 {kind}:{target} 调用模型超时(45s)，跳过")
+            results.append(f"{target}->超时")
         except Exception as e:
             log(f"[主动] 目标 {kind}:{target} 处理异常: {e}")
             results.append(f"{target}->异常:{e}")
     return "; ".join(results)
 
+
+async def proactive_poke_task():
+    """轮询 WebUI 写入的冒泡测试请求，强制触发一次主动消息。"""
+    while True:
+        try:
+            await asyncio.sleep(PROACTIVE_POKE_TICK)
+            if not os.path.isfile(PROACTIVE_REQ_FILE):
+                continue
+            req = {}
+            try:
+                with open(PROACTIVE_REQ_FILE, "r", encoding="utf-8") as f:
+                    req = json.load(f) or {}
+            except Exception as e:
+                log(f"[主动] 读取冒泡测试请求失败: {e}")
+            try:
+                os.remove(PROACTIVE_REQ_FILE)
+            except OSError:
+                pass
+
+            ttype = str(req.get("target_type") or "").strip().lower()
+            target = str(req.get("target") or "").strip()
+            log(f"[主动] 收到 WebUI 冒泡测试请求 target_type={ttype or '列表'} target={target or '-'}")
+            kwargs = {"force": True}
+            if ttype == "private":
+                if target:
+                    kwargs["specified_user_id"] = target
+                else:
+                    kwargs["only_kind"] = "private"
+            elif ttype == "group":
+                if target:
+                    kwargs["specified_group_id"] = target
+                else:
+                    kwargs["only_kind"] = "group"
+            res = await generate_and_send_proactive_message(**kwargs)
+            log(f"[主动] WebUI 冒泡测试结果: {res}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log(f"[主动] 冒泡测试任务异常: {e}")
 
 
 # ====== 胡思乱想 ======
@@ -1785,6 +2394,8 @@ async def generate_and_send_proactive_message(force=False, specified_user_id=Non
 MUSING_TICK = 60  # 调度检查周期（秒）
 MUSING_TIMEOUT = 60  # 单次发散 LLM 调用超时（秒）
 _musing_started = False
+_poke_started = False
+_autotag_started = False
 _musing_last_attempt = {}  # 避免没有素材的档案每分钟重试
 
 async def musing_task():
@@ -1827,6 +2438,7 @@ async def musing_task():
             due.sort(reverse=True)
             scope = due[0][1]
             _musing_last_attempt[scope] = now
+            epoch0 = await asyncio.to_thread(part_record.get_epoch, scope)
             log(f"[胡思乱想] 档案 {scope} 到期，开始回忆")
 
             memories = await asyncio.to_thread(
@@ -1853,6 +2465,9 @@ async def musing_task():
                         _post_json(payload, api_url=route.get("url"), api_key=route.get("key")), timeout=MUSING_TIMEOUT
                     )) or "")
                     if musing:
+                        if await asyncio.to_thread(part_record.get_epoch, uid) != epoch0:
+                            log(f"[胡思乱想] {uid} 期间记忆已被清空，跳过写入")
+                            continue
                         await asyncio.to_thread(
                             part_record.add_vector, uid, musing, "musing",
                             0.0, 0.0, 0.6, src_id, 0.4
@@ -1878,10 +2493,16 @@ async def main():
         try:
             async with websockets.serve(handler, "0.0.0.0", 8080):
                 print("程序已启动，等待 实时监控 连接...")
-                global _musing_started
+                global _musing_started, _poke_started, _autotag_started
                 if not _musing_started:
                     _musing_started = True
                     create_safe_task(musing_task(), "胡思乱想")
+                if not _poke_started:
+                    _poke_started = True
+                    create_safe_task(proactive_poke_task(), "冒泡测试")
+                if not _autotag_started:
+                    _autotag_started = True
+                    create_safe_task(sticker_autotag_task(), "表情打标")
                 await asyncio.Future()
         except asyncio.CancelledError:
             print("[系统] 程序被手动终止。")
@@ -1900,4 +2521,11 @@ if __name__ == "__main__":
             _f.write(str(os.getpid()))
     except Exception:
         pass
+    # 启动时顺手清理表情库幽灵记录（文件已删且无打标投入），避免历史脏数据越滚越多
+    try:
+        _clean = part_sticker.cleanup_sticker_db()
+        if _clean.get("removed") or _clean.get("relinked"):
+            log(f"[表情] 启动清理完成: 删除 {_clean.get('removed', 0)} 条，重链接 {_clean.get('relinked', 0)} 条")
+    except Exception as _e:
+        log(f"[表情] 启动清理失败: {_e}")
     asyncio.run(main())

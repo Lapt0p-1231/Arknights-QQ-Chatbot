@@ -1,17 +1,33 @@
 [指令列表]
+
+【通用】
+/sticker 或 /表情 - 查看公共表情库收录统计
 /rl - 重新生成上一条回复
+/charfit set <0.0-1.0> - 设置人格拟合度
+/user set <用户信息> - 记录你的信息
+/user clear - 清除你的信息
+/mdchange - 切换回复模式（群内切换本群；私聊切换本人）[群内仅管理]
+/cmd help - 查看本指令列表
+
+【仅私聊】
 /char set <角色设定> - 设置专属人格
 /char clear - 清除专属人格
-/charfit set <0.0-1.0> - 设置人格拟合度
-/user set <用户人设> - 设置用户信息
-/user clear - 清除用户信息
-/mdchange - 切换回复模式 [仅管理]
-/atswitch - 切换触发方式 [仅管理]
-/cd set <秒数> - 设置自动回复冷却 [仅管理]
-/atcd set <秒数> - 设置被@回复冷却 [仅管理]
-/faver set <QQ号> <数值> - 设置好感度 [仅管理]
-/name set <名字1> <名字2>... - 设置提名列表 [仅管理]
-/infer set <AI/PY> - 设置判回方式：AI/概率 [仅管理]
-/pro set <概率> - 设置掷骰概率 [仅管理]
-/memory reset - 清空聊天记忆 [群聊中仅管理]
-/cmd help - 查看本指令列表
+
+【管理员】
+/atswitch - 切换触发方式（群内切本群，私聊切全局默认）
+/cd set <秒数> - 设置自动回复冷却
+/atcd set <秒数> - 设置被 @ 回复冷却
+/faver set <QQ号> <数值> - 设置好感度
+/name set <名字1> <名字2> ... - 设置提名列表
+/infer set <AI/PY> - 设置判回方式：AI 判断 / 概率掷骰
+/pro set <概率> - 设置掷骰概率
+/smode set <AI/PY> - 设置表情触发方式
+/spro set <概率> - 设置表情附带概率
+/scd set <秒数> - 设置表情冷却时间
+/斗图 或 /duel - 开关斗图恶搞模式
+/memory reset - 清空聊天记忆
+/bot list - 查看已标注机器人及衰减步长
+/bot add <QQ> - 标注群内其他机器人
+/bot del <QQ> - 移除已标注机器人
+/bot step <百分比> - 设置连续互动概率衰减步长
+/poke 或 /戳我 或 /搭讪 - 立即触发一次主动搭讪（群内可用 /冒泡）

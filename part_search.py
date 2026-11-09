@@ -28,6 +28,17 @@ TOTAL_TIMEOUT = 45
 _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 _JINA_HEADERS = {"Accept": "text/plain", "User-Agent": "QQ-BOT/1.0"}
 
+_session = None
+
+
+def _get_session():
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=30, keepalive_timeout=30)
+        )
+    return _session
+
 # 搜索摘要高频废话（SEO/导航/免责声明类），命中整句剔除
 _STOP_PHRASES = (
     "为您提供", "欢迎访问", "欢迎光临", "点击进入", "点击查看", "点击下载",
@@ -105,13 +116,12 @@ async def _tavily_search(query, api_key, timeout):
         "include_answer": False,
     }
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                TAVILY_URL, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
+        async with _get_session().post(
+            TAVILY_URL, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
     except Exception:
         return None
     parts = []
@@ -159,13 +169,12 @@ def _jina_text(body):
 
 async def _fetch(url, headers, timeout):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                return await resp.text()
+        async with _get_session().get(
+            url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
+        ) as resp:
+            if resp.status != 200:
+                return None
+            return await resp.text()
     except Exception:
         return None
 

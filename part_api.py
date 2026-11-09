@@ -15,9 +15,9 @@ CONFIG_FILE = os.environ.get(
     "QQ_BOT_API_CONFIG", os.path.join(BASE_DIR, "api.json")
 )
 
-ROLES = ("main", "sub")
+ROLES = ("main", "sub", "sticker_tag")
 
-# 仅在 api.json 不存在时用于初始化；密钥通过 WebUI 或 api.json 配置
+# 仅在 api.json 不存在时用于初始化（与旧版硬编码保持一致）
 DEFAULT_CONFIG = {
     "profiles": [
         {
@@ -28,7 +28,11 @@ DEFAULT_CONFIG = {
             "model": "deepseek-chat",
         }
     ],
-    "routes": {"main": "deepseek", "sub": "deepseek"},
+    "routes": {
+        "main": "deepseek",
+        "sub": "deepseek",
+        "sticker_tag": "deepseek",
+    },
 }
 
 _cache = {"mtime": None, "data": None}
@@ -50,11 +54,15 @@ def _normalize(data):
         })
     routes = data.get("routes") if isinstance(data.get("routes"), dict) else {}
     routes = {role: str(routes.get(role) or "") for role in ROLES}
-    # 路由兜底：指向不存在的 profile 时回退到第一个
+    # 路由兜底：指向不存在的 profile 时回退；表情判断/打标默认跟随分模型
     fallback = profiles[0]["id"] if profiles else ""
-    for role in ROLES:
-        if routes[role] not in {p["id"] for p in profiles}:
+    valid = {p["id"] for p in profiles}
+    for role in ("main", "sub"):
+        if routes[role] not in valid:
             routes[role] = fallback
+    for role in ("sticker_tag",):
+        if routes[role] not in valid:
+            routes[role] = routes["sub"]
     return {"profiles": profiles, "routes": routes}
 
 
@@ -118,7 +126,7 @@ def get_route(role):
 
 def set_route(role, pid):
     if role not in ROLES:
-        raise ValueError("role 只能是 main 或 sub")
+        raise ValueError("role 只能是 main / sub / sticker_tag")
     cfg = load_config()
     if pid not in {p["id"] for p in cfg["profiles"]}:
         raise ValueError("没有这个端点")
@@ -171,7 +179,9 @@ def upsert_profile(pid, name, url, key, model):
         })
         # 第一个端点自动接管两路路由
         if len(cfg["profiles"]) == 1:
-            cfg["routes"] = {"main": pid, "sub": pid}
+            cfg["routes"] = {
+                "main": pid, "sub": pid, "sticker_tag": pid,
+            }
     save_config(cfg)
     return pid
 
