@@ -1,12 +1,12 @@
 # 在QQ上的《明日方舟》角色聊天机器人
 
-当前版本：v1.4.2 · [更新日志](CHANGELOG.md)
+当前版本：v1.5.0 · [更新日志](CHANGELOG.md)
 
 基于 SnowLuma（Docker）+ OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory ）、语义召回、角色扮演、群聊插话和本地 WebUI。
 
 # 能让你的干员和你QQ聊天！！
 
-该版本不包含个人 API Key、QQ 账号、聊天记录、向量数据、模型缓存、备份或本机 Docker 环境。
+该版本不包含个人 API Key、QQ 账号、聊天记录、向量数据、模型缓存、备份、本机 Docker 环境或第三方插件数据。
 
 ## 功能
 
@@ -17,7 +17,8 @@
 - 情绪表情包：AI/PY 判断、情绪桶选图、细标签优选、可选自动打标、斗图与捕获风控
 - 角色系统：支持全局人设、用户专属人设、人设拟合度和用户档案
 - 群聊配置：回复模式与触发方式均可按群独立覆盖或跟随全局
-- WebUI：模型路由、提示词管理、记忆检索、档案配置、表情包与主动任务管理
+- 插件系统：支持本地插件、命令/回复钩子、WebUI 沙箱面板、热重载与主题插件
+- WebUI：模型路由、提示词管理、记忆检索、档案配置、表情包、主动任务与插件管理
 - 指令系统：重新生成、清空记忆、好感度、回复模式和管理员设置
 
 ## 运行要求
@@ -113,6 +114,12 @@ WebUI 地址：http://127.0.0.1:8090
 
 WebUI 默认没有登录认证，请不要将监听地址改为公网地址。
 
+## 插件系统
+
+`plugins/` 用于存放本地插件，开发规范见 [`plugins/README.md`](plugins/README.md)。WebUI 的 Plugins 页面支持启用/停用、ZIP 安装、创建模板和删除插件；带 `index.html` 的插件会挂载到沙箱 iframe，主题插件可直接切换界面样式。
+
+Python 插件是**可信代码**，不是安全沙箱。安装第三方插件前请检查来源与代码。`plugin.py` 通过声明式权限调用消息与模型能力；插件配置和运行数据保存在 `data/` 下，不进入仓库。
+
 ## 人设与提示词
 
 `prompts/` 保留通用对话、记忆、联网、表情包与主动搭话提示词，以及可选白金角色模板。白金人设默认关闭，可在 WebUI 的提示词管理中启用，也可以直接修改或新增 `.txt` 提示词文件。
@@ -162,9 +169,13 @@ Arknights-QQ-Chatbot/
 ├── part_api.py           # OpenAI 兼容端点与模型路由
 ├── part_search.py        # 联网搜索模块（Tavily/Jina/必应三级降级）
 ├── part_sticker.py       # 表情包捕获、情绪优选与发送模块
+├── part_plugin.py        # 插件加载、权限、热重载与 WebUI 桥接
 ├── part_web.py           # FastAPI WebUI 后端
 ├── prompts/              # 通用提示词与可选白金人设
+├── plugins/              # 插件开发文档与主题示例
 ├── webui/index.html      # WebUI 前端
+├── webui/plugin_host.js  # 插件 iframe 宿主桥接
+├── webui/plugin_bridge.js # 插件页面 RPC 桥接
 ├── api.example.json      # 模型配置模板
 ├── 环境配置教程.txt       # 首次部署的完整环境配置步骤
 ├── CHANGELOG.md          # 版本更新日志

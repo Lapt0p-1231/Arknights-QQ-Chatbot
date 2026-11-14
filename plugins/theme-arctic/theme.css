@@ -1,0 +1,76 @@
+:root {
+  --bg: #061216;
+  --bg2: #081a20;
+  --panel: #0b2027;
+  --panel2: #0e2931;
+  --line: #17414a;
+  --line2: #24616d;
+  --text: #d9f6f2;
+  --dim: #8dbbb7;
+  --faint: #5c8c89;
+  --accent: #62e6d2;
+  --accent-dim: rgba(98, 230, 210, .15);
+  --red: #ff6b6b;
+  --cyan: #71d7ff;
+  --green: #9df5c3;
+}
+
+body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(circle at 12% 8%, rgba(98, 230, 210, .10), transparent 28%),
+    linear-gradient(rgba(98, 230, 210, .025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(98, 230, 210, .025) 1px, transparent 1px);
+  background-size: auto, 28px 28px, 28px 28px;
+}
+
+.rail {
+  background: linear-gradient(180deg, #071b21, #041015);
+  border-right-color: #1c4a53;
+}
+
+.panel,
+.plugin-card,
+.dropzone,
+.modal,
+.toast {
+  background-color: #0b2027;
+  border-color: #1e4b55;
+}
+
+.panel-h,
+.topbar,
+.rail-foot {
+  border-color: #1e4b55;
+}
+
+.nav-item:hover,
+.plist tr:hover td {
+  background: #103039;
+}
+
+.nav-item.active {
+  background: linear-gradient(90deg, rgba(98, 230, 210, .16), transparent);
+}
+
+.brand::before {
+  border-color: rgba(98, 230, 210, .28);
+}
+
+input,
+select,
+textarea {
+  background-color: #071a20;
+  border-color: #23525c;
+  color: var(--text);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+}
+
+.plugin-frame {
+  background: #061216;
+}

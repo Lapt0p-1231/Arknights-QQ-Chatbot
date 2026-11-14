@@ -421,8 +421,15 @@ async def capture_from_event(
 
         for img_hash, ext, img_bytes, dedup_id, phash in pending_images:
             filename = f"{img_hash[:16]}{ext}"
-            # 新捕获的未分类图片直接存放在 categories 根目录，方便用户随时拖拽整理
-            uncat_file_path = os.path.join(STICKERS_CATEGORIES_DIR, filename)
+            # 识图 caption 能明确落到唯一情绪桶时直接归位，省得用户再手工拖一遍；
+            # 归不到/多义（例如同时命中 happy+flirty）则留在 categories 根目录等人工整理。
+            dest_folder = ""
+            if caption:
+                hit = get_sticker_categories({"caption": caption})
+                if len(hit) == 1:
+                    dest_folder = hit[0]
+            dest_dir = os.path.join(STICKERS_CATEGORIES_DIR, FOLDER_NAMES[dest_folder]) if dest_folder else STICKERS_CATEGORIES_DIR
+            dest_file_path = os.path.join(dest_dir, filename)
 
             exists = False
             for item in db["images"]:
@@ -440,6 +447,9 @@ async def capture_from_event(
                     if caption and not item.get("caption"):
                         item["caption"] = caption
                         changed = True
+                    if dest_folder and not item.get("emotion"):
+                        item["emotion"] = dest_folder
+                        changed = True
                     # 旧文件被手动删掉时按原文件名补回；若是被重命名/移动过，则重链接到新文件名，避免生成重复文件
                     old_name = item.get("filename")
                     if old_name and not find_sticker_image_path(old_name):
@@ -456,14 +466,21 @@ async def capture_from_event(
                                 await asyncio.to_thread(_write_bytes, old_path, img_bytes)
                             except Exception as e:
                                 print(f"[表情] 补回图片文件失败 {old_path}: {e}")
+                    # 补充识图：原先没 caption 的根目录图，这次拿到能唯一归桶的描述就顺手挪进去
+                    elif dest_folder and old_name:
+                        cur_path = find_sticker_image_path(old_name)
+                        if cur_path and os.path.dirname(os.path.abspath(cur_path)) == os.path.abspath(STICKERS_CATEGORIES_DIR):
+                            moved = await asyncio.to_thread(move_root_image_to_bucket, old_name, dest_folder)
+                            if moved:
+                                print(f"[表情] 补充分类，已移入 {FOLDER_NAMES[dest_folder]}: {old_name}")
                     break
 
             if not exists:
-                if not os.path.exists(uncat_file_path):
+                if not os.path.exists(dest_file_path):
                     try:
-                        await asyncio.to_thread(_write_bytes, uncat_file_path, img_bytes)
+                        await asyncio.to_thread(_write_bytes, dest_file_path, img_bytes)
                     except Exception as e:
-                        print(f"[表情] 保存图片文件失败 {uncat_file_path}: {e}")
+                        print(f"[表情] 保存图片文件失败 {dest_file_path}: {e}")
                         continue
 
                 db["images"].append({
@@ -474,12 +491,14 @@ async def capture_from_event(
                     "filename": filename,
                     "sub_type": "1",
                     "caption": caption or "",
+                    "emotion": dest_folder or None,
                     "source": source,
                     "sender_id": user_id,
                     "created_at": int(time.time()),
                 })
                 changed = True
-                print(f"[表情] 捕获新收藏图片表情 -> categories根目录: {filename} (描述: {caption or '无'}, 来源: {source})")
+                where = FOLDER_NAMES.get(dest_folder, "未分类(categories根目录)")
+                print(f"[表情] 捕获新收藏图片表情 -> {where}: {filename} (描述: {caption or '无'}, 来源: {source})")
 
         if changed:
             await asyncio.to_thread(_save_db_sync, db)
@@ -587,7 +606,7 @@ def get_category_images_sync(category_key: str, db: Optional[Dict[str, Any]] = N
         if name in seen:
             continue
         tags = meta.get("tags") or []
-        if not (meta.get("emotion") == category_key or any(t in fine_tags for t in tags)):
+        if category_key not in get_sticker_categories(meta) and not any(t in fine_tags for t in tags):
             continue
         root_path = os.path.join(root_dir, name)
         if not os.path.exists(root_path):
@@ -604,6 +623,28 @@ def get_category_images_sync(category_key: str, db: Optional[Dict[str, Any]] = N
             "folder": folder_name,
         })
     return results
+
+
+def move_root_image_to_bucket(filename: str, bucket: str) -> Optional[str]:
+    """把仍留在 categories 根目录的图片移动进对应情绪文件夹（自动打标后调用）。
+    只移动根目录文件；已经在别的分类文件夹里的一律不动，尊重人工整理。"""
+    if bucket not in FOLDER_NAMES or not filename:
+        return None
+    name = os.path.basename(filename)
+    src = os.path.join(STICKERS_CATEGORIES_DIR, name)
+    if not os.path.exists(src):
+        return None
+    dst_dir = os.path.join(STICKERS_CATEGORIES_DIR, FOLDER_NAMES[bucket])
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, name)
+    if os.path.exists(dst):
+        return dst
+    try:
+        os.replace(src, dst)
+        return dst
+    except Exception as e:
+        print(f"[表情] 移入分类文件夹失败 {name} -> {bucket}: {e}")
+        return None
 
 
 def build_replay_segment(sticker_entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -702,6 +743,9 @@ def get_untagged_entries(limit: int = 1) -> List[Dict[str, Any]]:
                 continue
             if int(it.get("tag_attempts", 0) or 0) >= 3:
                 continue
+            # 没有 emoji_id 的 mface 无法调用视觉打标，直接跳过，避免永久占满批次
+            if kind == "mface" and not str(it.get("id") or "").strip():
+                continue
             if kind == "images" and not find_sticker_image_path(it.get("filename")):
                 continue
             item = dict(it)
@@ -797,7 +841,7 @@ _last_sticker_choice: Dict[str, str] = {}
 EMOTION_CATEGORIES = {
     "happy": {
         "name": "开心/得意",
-        "tags": ["开心", "雀跃", "得意", "兴奋", "期待", "高兴", "感动", "自豪", "欣喜", "好耶", "哈哈", "嘿嘿", "嘻嘻", "心心", "喜欢", "赞", "大拇指", "棒", "笑", "乐", "绝了", "太棒了", "庆祝", "爱心"],
+        "tags": ["开心", "雀跃", "得意", "兴奋", "期待", "高兴", "感动", "自豪", "欣喜", "好耶", "哈哈", "嘿嘿", "嘻嘻", "心心", "喜欢", "赞", "大拇指", "棒", "笑", "乐", "绝了", "太棒了", "庆祝", "爱心", "不错", "聪明", "好吃", "厉害"],
     },
     "sad": {
         "name": "难过/委屈",
@@ -840,6 +884,19 @@ FINE_TAG_TO_BUCKET = {
     for bucket, tags in STICKER_FINE_TAGS.items()
     for tag in tags
 }
+
+
+def should_capture_sticker(settings: Dict[str, Any], is_admin: bool) -> bool:
+    """抓取过滤：
+    - 总开关关闭 → 不抓；
+    - 仅抓取管理员开启 → 只抓管理员，100%；
+    - 仅抓取管理员关闭 → 所有人（含管理员）按 sticker_capture_probability 概率抓。"""
+    if not settings.get("sticker_capture_enabled", True):
+        return False
+    if settings.get("sticker_capture_admin_only", True):
+        return bool(is_admin)
+    prob = float(settings.get("sticker_capture_probability", 30.0))
+    return random.random() * 100 < prob
 
 
 def _bucket_has_images(bucket: str, db: Optional[Dict[str, Any]] = None) -> bool:
@@ -996,14 +1053,31 @@ async def pick_sticker_by_mood(
     if is_duel:
         db = await get_db()
         duel_pool = []
-        for cat_k in ("happy", "angry", "annoyed", "shocked", "flirty"):
-            duel_pool.extend(get_category_images_sync(cat_k, db))
+        seen_paths = set()
+        for cat_k in EMOTION_CATEGORIES:
+            for it in get_category_images_sync(cat_k, db):
+                key = it.get("file_path") or it.get("filename") or ""
+                if key and key not in seen_paths:
+                    seen_paths.add(key)
+                    duel_pool.append(it)
         for mf in db.get("mface", []):
             duel_pool.append(mf)
+        # 兜底：分类文件夹都空着时，取 categories 根目录下的未分类图片
+        for it in get_root_images_sync():
+            key = it.get("file_path") or it.get("filename") or ""
+            if key and key not in seen_paths:
+                seen_paths.add(key)
+                duel_pool.append(it)
         if not duel_pool:
-            # 兜底：如果分类文件夹都空着，取 categories 根目录下的未分类图片
-            duel_pool.extend(get_root_images_sync())
-        return random.choice(duel_pool) if duel_pool else None
+            return None
+        last_key = _last_sticker_choice.get(scope, "")
+        filtered = [
+            it for it in duel_pool
+            if (it.get("filename") or it.get("id") or "") != last_key
+        ]
+        chosen = random.choice(filtered or duel_pool)
+        _last_sticker_choice[scope] = chosen.get("filename") or chosen.get("id") or ""
+        return chosen
 
     target_cat, cat_source = detect_reply_emotion(mood=mood, text=text, keyword=keyword)
     if not target_cat:
@@ -1077,7 +1151,9 @@ async def process_reply_stickers(
 
 
 def is_incoming_pure_sticker(event: Dict[str, Any]) -> bool:
-    """判断收到的消息是否是纯表情包（对方发了 mface 或收藏图且几乎没有文字）"""
+    """判断收到的消息是否是纯表情包（对方发了 mface、收藏表情或普通图片且几乎没有文字）。
+    斗图模式开启时，普通图片（sub_type=0，如截图/保存的表情）也视为斗图素材，
+    否则 NapCat 把表情包当普通图片上传时会导致斗图失效。"""
     raw_message = event.get("message", [])
     if not isinstance(raw_message, (list, tuple)):
         return False
@@ -1091,11 +1167,12 @@ def is_incoming_pure_sticker(event: Dict[str, Any]) -> bool:
         if not isinstance(sd, dict):
             continue
         is_mface_seg = st in ("mface", "market_face") or (st == "image" and ("emoji_id" in sd or "emojiId" in sd))
-        is_sticker_img = st == "image" and str(sd.get("sub_type", "0")) in ("1", "1.0")
-        if is_mface_seg or is_sticker_img:
+        # 普通 image 也计入：QQ 截图、从相册发送的表情包通常 sub_type=0
+        is_image_seg = st == "image"
+        if is_mface_seg or is_image_seg:
             has_sticker = True
         elif st == "text":
             text_content += sd.get("text", "")
-    # 只要包含表情，且附加文字小于等于2个字（如“？”“哈”），即视为纯表情/表情包投喂
+    # 只要包含表情/图片，且附加文字小于等于2个字（如“？”“哈”），即视为纯表情/表情包投喂
     return has_sticker and len(text_content.strip()) <= 2
 

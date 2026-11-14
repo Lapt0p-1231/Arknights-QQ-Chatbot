@@ -147,7 +147,7 @@ body::after{
 .btn.sm{padding:5px 9px;font-size:10px}
 .btn.icon{padding:5px 8px;min-width:28px}
 
-input[type=text],input[type=number],textarea,select{
+input:not([type]),input[type=text],input[type=number],input[type=password],textarea,select{
   background:#0a0e14;border:1px solid var(--line);color:var(--text);
   padding:8px 10px;font-family:var(--mono);font-size:12px;outline:none;width:100%;
   transition:.15s;
@@ -264,6 +264,21 @@ input[type=range]{accent-color:var(--accent);width:100%}
 .modal-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
 .modal textarea{min-height:340px;font-size:12px}
 
+.plugin-list{display:flex;flex-direction:column;gap:8px}
+.plugin-card{display:flex;align-items:center;gap:12px;padding:12px;background:#111821;border:1px solid #1d2836}
+.plugin-mark{width:8px;height:8px;border-radius:50%;background:#4a5665;flex:0 0 auto}
+.plugin-mark.on{background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.plugin-main{min-width:0;flex:1}
+.plugin-title{font-size:13px;color:#e6edf5;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.plugin-desc{font-size:11px;color:var(--faint);margin:3px 0}
+.plugin-ops{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.dropzone{padding:20px;border:1px dashed #334255;background:#0f151d;text-align:center}
+.dropzone.drag{border-color:var(--accent);background:#171c20}
+.drop-title{font-size:13px;color:#dbe4ee;letter-spacing:1px}
+.plugin-host-panel{margin-top:18px}
+.plugin-panel-body{padding:0}
+.plugin-frame{display:block;width:100%;min-height:220px;border:0;background:#0d1015}
+
 .toasts{position:fixed;right:20px;bottom:20px;z-index:100;display:flex;flex-direction:column;gap:8px}
 .toast{
   background:#0f1620;border:1px solid var(--line2);border-left:3px solid var(--accent);
@@ -310,7 +325,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.4.2</div>
+      <div>BUILD 2026.11 // v1.5.0</div>
     </div>
   </aside>
 
@@ -357,10 +372,11 @@ input[type=range]{accent-color:var(--accent);width:100%}
                   <button :class="{on:settings.infer_mode==='PY'}" @click="saveSettings({infer_mode:'PY'})">PY</button>
                 </div>
               </div>
-              <div class="row" style="margin-top:14px">
+              <div class="row" style="margin-top:14px" v-if="settings.infer_mode==='PY'">
                 <div class="grow">
-                  <div class="row between"><span class="label">Dive Probability</span><span class="mono small" style="color:var(--accent)">{{ settings.dive_probability }}%</span></div>
+                  <div class="row between"><span class="label">Dive Probability / 潜水插嘴概率</span><span class="mono small" style="color:var(--accent)">{{ settings.dive_probability }}%</span></div>
                   <input type="range" min="0" max="100" step="1" v-model.number="settings.dive_probability" @change="saveSettings({dive_probability:settings.dive_probability})">
+                  <div class="hint">仅 PY 模式生效；AI 模式由群聊判断模型决定是否插嘴</div>
                 </div>
               </div>
               <div class="divider"></div>
@@ -495,7 +511,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
               <div class="row">
                 <div class="grow">
                   <div class="row between"><span class="label">Sticker Cooldown / 表情触发冷却</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_cooldown }}s</span></div>
-                  <input type="range" min="0" max="300" step="5" v-model.number="settings.sticker_cooldown" @change="saveSettings({sticker_cooldown:settings.sticker_cooldown})">
+                  <input type="range" min="0" max="3600" step="5" v-model.number="settings.sticker_cooldown" @change="saveSettings({sticker_cooldown:settings.sticker_cooldown})">
                 </div>
               </div>
               <div class="divider"></div>
@@ -506,6 +522,13 @@ input[type=range]{accent-color:var(--accent);width:100%}
               <div class="divider" v-if="settings.sticker_autotag_enabled"></div>
               <div class="row" v-if="settings.sticker_autotag_enabled">
                 <div class="grow"><div class="hint">打标使用的模型在「Model」页的 STICKER TAGGING 路由中配置（需要支持图片输入）。</div></div>
+              </div>
+              <div class="row" v-if="settings.sticker_autotag_enabled">
+                <div class="grow">
+                  <div class="row between"><span class="label">Tag Batch / 每轮打标张数</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_autotag_batch }} 张</span></div>
+                  <input type="range" min="1" max="10" step="1" v-model.number="settings.sticker_autotag_batch" @change="saveSettings({sticker_autotag_batch:settings.sticker_autotag_batch})">
+                  <div class="hint">积压时每轮多处理几张，跑完积压后自动恢复 60 秒一轮</div>
+                </div>
               </div>
               <div class="divider"></div>
               <div class="row between">
@@ -524,7 +547,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider" v-if="settings.sticker_capture_enabled"></div>
               <div class="row between" v-if="settings.sticker_capture_enabled">
-                <div><div class="label">Admin Only / 仅抓取管理员</div><div class="hint">仅抓取管理员的表情</div></div>
+                <div><div class="label">Admin Only / 仅抓取管理员</div><div class="hint">开启：只收管理员的表情（100%）。关闭：所有人（含管理员）按下面的概率收</div></div>
                 <div class="switch" :class="{on:settings.sticker_capture_admin_only}" @click="saveSettings({sticker_capture_admin_only:!settings.sticker_capture_admin_only})"></div>
               </div>
               <div class="divider" v-if="settings.sticker_capture_enabled && !settings.sticker_capture_admin_only"></div>
@@ -532,6 +555,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
                 <div class="grow">
                   <div class="row between"><span class="label">Capture Probability / 概率抓取</span><span class="mono small" style="color:var(--accent)">{{ settings.sticker_capture_probability }}%</span></div>
                   <input type="range" min="0" max="100" step="5" v-model.number="settings.sticker_capture_probability" @change="saveSettings({sticker_capture_probability:settings.sticker_capture_probability})">
+                  <div class="hint">对所有人生效；想自己喂图 100% 收录时，请改开「仅抓取管理员」</div>
                 </div>
               </div>
               <div class="divider"></div>
@@ -1300,7 +1324,8 @@ input[type=range]{accent-color:var(--accent);width:100%}
                   <td>
                     <span v-if="models.routes.main===p.id" class="tag y">MAIN</span>
                     <span v-if="models.routes.sub===p.id" class="tag c">SUB</span>
-                    <span v-if="models.routes.main!==p.id && models.routes.sub!==p.id" class="tag ghost">IDLE</span>
+                    <span v-if="models.routes.sticker_tag===p.id" class="tag ghost">STICKER</span>
+                    <span v-if="models.routes.main!==p.id && models.routes.sub!==p.id && models.routes.sticker_tag!==p.id" class="tag ghost">IDLE</span>
                   </td>
                   <td>
                     <div class="ops">
@@ -1343,6 +1368,80 @@ input[type=range]{accent-color:var(--accent);width:100%}
                 <tr v-if="!models.profiles.length"><td colspan="6"><div class="empty">// NO ENDPOINT</div></td></tr>
               </tbody>
             </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ==================== 08 PLUGINS ==================== -->
+      <div v-if="tab==='plugins'" class="view">
+        <div class="page-head">
+          <div class="ghost">08</div>
+          <div class="t"><div class="en">Plugin Control</div><div class="cn">插件管理</div></div>
+          <div class="bar"></div>
+          <div class="meta">PLUGIN HOST</div>
+        </div>
+
+        <div class="grid g2">
+          <section class="panel">
+            <div class="panel-h"><span class="n">01</span><span class="tt">Installed</span><span class="desc">已安装插件</span><button class="btn sm" @click="loadPlugins">刷新</button></div>
+            <div class="panel-b">
+              <div class="plugin-list">
+                <div v-for="p in plugins" :key="p.id" class="plugin-card">
+                  <div class="plugin-mark" :class="{on:p.enabled}"></div>
+                  <div class="plugin-main">
+                    <div class="plugin-title">{{ p.name }} <span class="mono faint small">{{ p.type === 'theme' ? 'THEME' : 'PLUGIN' }} · {{ p.id }} · v{{ p.version }}</span></div>
+                    <div class="plugin-desc">{{ p.description || '无描述' }}</div>
+                    <div class="mono small" :style="p.error ? 'color:#ff8a80' : 'color:var(--faint)'">
+                      {{ pluginStatus(p) }}<span v-if="p.error"> · {{ p.error }}</span>
+                    </div>
+                  </div>
+                  <div class="plugin-ops">
+                    <button v-if="p.has_panel" class="btn sm" :disabled="!p.enabled" @click="openPluginPanel(p)">面板</button>
+                    <div class="switch sm" :class="{on:p.enabled}" @click="togglePlugin(p)"></div>
+                    <button class="btn sm danger" @click="deletePlugin(p)">删除</button>
+                  </div>
+                </div>
+                <div v-if="!plugins.length" class="empty">// NO PLUGINS</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-h"><span class="n">02</span><span class="tt">Add Plugin</span><span class="desc">安装与新建</span></div>
+            <div class="panel-b">
+              <div class="dropzone" :class="{drag:pluginDrag}"
+                   @dragover.prevent="pluginDrag=true"
+                   @dragleave.prevent="pluginDrag=false"
+                   @drop.prevent="onPluginDrop">
+                <div class="drop-title">拖入 ZIP 插件包</div>
+                <div class="hint">或从本地选择文件；安装后默认关闭，打开开关后加载面板</div>
+                <input ref="pluginFile" type="file" accept=".zip" style="display:none" @change="onPluginFile">
+                <button class="btn sm primary" style="margin-top:10px" @click="$refs.pluginFile.click()">选择 ZIP</button>
+              </div>
+
+              <div class="divider"></div>
+              <div class="label" style="margin-bottom:6px">新建空插件模板</div>
+              <div class="row" style="gap:8px">
+                <input type="text" v-model="pluginName" placeholder="插件名称，例如 视频分析" style="flex:1">
+                <input type="text" v-model="pluginId" placeholder="ID（可留空自动生成）" style="width:180px">
+                <button class="btn primary" @click="createPlugin">创建</button>
+              </div>
+              <div class="hint" style="margin-top:8px">创建后刷新插件列表，打开开关即可挂载 iframe 面板。ZIP 内可包含 manifest.json、plugin.py、index.html、main.py。</div>
+            </div>
+          </section>
+        </div>
+
+        <section v-if="activePlugin && activePlugin.has_panel" class="panel plugin-host-panel">
+          <div class="panel-h">
+            <span class="n">03</span><span class="tt">{{ activePlugin.name }}</span>
+            <span class="desc">{{ activePlugin.id }} · PANEL</span>
+            <div class="grow"></div>
+            <button class="btn sm" @click="closePluginPanel">收起</button>
+          </div>
+          <div class="panel-b plugin-panel-body">
+            <iframe ref="pluginFrame" :src="pluginFrameSrc" class="plugin-frame"
+                    sandbox="allow-scripts" :style="{height: pluginFrameHeight + 'px'}"
+                    title="Plugin panel"></iframe>
           </div>
         </section>
       </div>
@@ -1446,6 +1545,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
 </div>
 </div>
 
+<script src="/plugin-host.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
 <script>if(!window.Vue){document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.4.21/vue.global.prod.min.js"><\/script>')}</script>
 <script>
@@ -1463,11 +1563,12 @@ createApp({
         { id:'archive', idx:'05', en:'Archive', cn:'档案汇总' },
         { id:'musing',  idx:'06', en:'Musing', cn:'发散调度' },
         { id:'model',   idx:'07', en:'Model', cn:'模型路由' },
+        { id:'plugins', idx:'08', en:'Plugins', cn:'插件管理' },
       ],
       clock: '--:--:--',
       botRunning: false, botPid: null,
       status: { log_active:false, db_size:0, prompt_count:0, enabled_prompt_count:0, bot_qq:'' },
-      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, max_words:20, vector_min_importance:0.35, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30, sticker_autotag_enabled:false, known_bots:[], bot_decay_step:25, proactive_enabled:false, proactive_target:'', proactive_interval_minutes:180, proactive_probability:50, proactive_quiet_start:23, proactive_quiet_end:8, proactive_group_idle_minutes:30, proactive_type_a_ratio:50 },
+      settings: { at_only:true, reply_cooldown:10, reply_cooldown_at:5, infer_mode:'AI', dive_probability:10, name_keywords:[], default_mode:'扮演', hot_context_private:30, hot_context_group:12, recall_threshold:0.55, max_words:20, vector_min_importance:0.35, vision_enabled:true, vision_meme_probability:30, quote_threshold:3, sticker_enabled:true, sticker_mode:'AI', sticker_probability:25, sticker_cooldown:20, sticker_duel_mode:false, sticker_capture_only:false, sticker_capture_enabled:true, sticker_capture_admin_only:true, sticker_capture_probability:30, sticker_autotag_enabled:false, sticker_autotag_batch:3, known_bots:[], bot_decay_step:25, proactive_enabled:false, proactive_target:'', proactive_interval_minutes:180, proactive_probability:50, proactive_quiet_start:23, proactive_quiet_end:8, proactive_group_idle_minutes:30, proactive_type_a_ratio:50 },
       stickerStats: { total:0, mface_count:0, image_count:0 },
       musing: { config:{ interval_minutes:120, private_enabled:true, group_enabled:true, min_importance:0.7 }, overrides:{}, scopes:[] },
       musingSel: [], musingSearch: '', musingType: '', bulkInterval: null,
@@ -1491,6 +1592,8 @@ createApp({
       ],
       promptItems: [],
       models: { profiles: [], routes: { main:'', sub:'' } },
+      plugins: [], activePlugin: null, pluginFrameHeight: 460,
+      pluginName: '', pluginId: '', pluginDrag: false, pluginBusy: false,
       profileForm: { id:null, name:'', url:'', key:'', model:'' },
       modelTests: {},
       busy: { search:false, embed:false, memory:false, target:false },
@@ -1500,6 +1603,11 @@ createApp({
   },
   computed: {
     currentTab(){ return this.tabs.find(t=>t.id===this.tab) || this.tabs[0]; },
+    pluginFrameSrc(){
+      if(!this.activePlugin || !this.activePlugin.panel) return '';
+      const path = this.activePlugin.panel.split('/').map(encodeURIComponent).join('/');
+      return `/plugin-assets/${encodeURIComponent(this.activePlugin.id)}/${path}?v=${encodeURIComponent(this.activePlugin.revision || '')}`;
+    },
     archiveCounts(){
       const c = { private:0, group:0, member:0 };
       for(const a of this.archives) if(c[a.type]!==undefined) c[a.type]++;
@@ -1543,13 +1651,15 @@ createApp({
     this.tick(); setInterval(this.tick, 1000);
     this.refreshStatus(); this.refreshBotStatus();
     setInterval(()=>{ this.refreshStatus(); this.refreshBotStatus(); }, 15000);
-    this.loadSettings(); this.loadHelp(); this.loadPrompts(); this.loadMusing(); this.loadArchives(); this.loadModels();
+    this.loadSettings(); this.loadHelp(); this.loadPrompts(); this.loadMusing(); this.loadArchives(); this.loadModels(); this.loadPlugins();
     this.connectWS();
     this.$watch('tab', v => {
       if(v==='prompts') this.loadPrompts();
       if(v==='archive') this.loadArchives();
       if(v==='musing') this.loadMusing();
       if(v==='model') this.loadModels();
+      if(v==='plugins') this.loadPlugins();
+      else this.closePluginPanel();
       if(v==='logs') this.scrollBottom();
     });
     this.$watch(()=>this.filteredLogs.length, ()=>{ if(this.autoscroll) this.scrollBottom(); });
@@ -1637,12 +1747,14 @@ createApp({
       Object.assign(this.settings, patch);
       await this.guard(async()=>{
         const res = await this.api('/api/settings',{method:'POST',body:patch});
-        this.settings = res;
-        // 检测后端是否真的保存了该字段（防止旧版本后端吞字段导致状态回滚抽搐）
-        for (const k in patch) {
-          if (res[k] !== patch[k] && typeof patch[k] !== 'object') {
-            console.warn(`[设置同步警告] 后端返回的 ${k}=${res[k]} 与请求的 ${patch[k]} 不一致，可能是后端未重启或未支持该字段`);
-          }
+        const mismatch = Object.keys(patch).filter(k => typeof patch[k] !== 'object' && res[k] !== patch[k]);
+        this.settings = Object.assign({}, this.settings, res);
+        if (mismatch.length) {
+          // 后端没保存成功（通常是 WebUI 还在跑旧进程）：保留本地值，别把控件弹回去，并明确提示
+          for (const k of mismatch) this.settings[k] = patch[k];
+          console.warn(`[设置同步警告] 后端未保存: ${mismatch.join(', ')}，可能 WebUI 进程未重启`);
+          this.toast('ERROR', '部分设置未生效：WebUI 进程可能还是旧版本，请重启 WebUI', true);
+          return;
         }
       }, '设置已保存');
     },
@@ -1975,13 +2087,122 @@ createApp({
       await this.guard(async()=>{ this.promptItems=(await this.api('/api/prompts/delete',{method:'POST',body:{file:p.file}})).items; }, '已删除');
     },
 
+    /* ---- plugins ---- */
+    async loadPlugins(){
+      try {
+        const data = await this.api('/api/plugins');
+        this.plugins = data.plugins || [];
+        if(this.activePlugin){
+          const fresh = this.plugins.find(p=>p.id===this.activePlugin.id);
+          if(!fresh || !fresh.enabled || !fresh.has_panel) this.closePluginPanel();
+          else this.activePlugin = fresh;
+        }
+        this.applyPluginTheme();
+      } catch(e){}
+    },
+    applyPluginTheme(){
+      const old = document.getElementById('ark-plugin-theme');
+      const theme = this.plugins.find(p=>p.type==='theme' && p.enabled && p.stylesheet);
+      if(!theme){
+        if(old) old.remove();
+        return;
+      }
+      const path = theme.stylesheet.split('/').map(encodeURIComponent).join('/');
+      const href = `/plugin-assets/${encodeURIComponent(theme.id)}/${path}?v=${encodeURIComponent(theme.revision || '')}`;
+      if(old && old.dataset.pluginId === theme.id && old.getAttribute('href') === href) return;
+      const link = document.createElement('link');
+      link.id = 'ark-plugin-theme';
+      link.rel = 'stylesheet';
+      link.href = href;
+      link.dataset.pluginId = theme.id;
+      if(old) old.replaceWith(link);
+      else document.head.appendChild(link);
+    },
+    pluginStatus(p){
+      if(p.type==='theme') return p.enabled ? 'ACTIVE THEME' : 'THEME';
+      if(!p.enabled) return 'DISABLED';
+      if(p.error) return 'ERROR';
+      if(p.loaded) return 'RUNNING';
+      return 'PENDING';
+    },
+    async togglePlugin(p){
+      await this.guard(async()=>{
+        const res = await this.api('/api/plugins/' + encodeURIComponent(p.id) + '/toggle', {method:'POST', body:{enabled:!p.enabled}});
+        p.enabled = res.enabled;
+        await this.loadPlugins();
+        const fresh = this.plugins.find(x=>x.id===p.id);
+        if(fresh && fresh.enabled && fresh.has_panel) this.openPluginPanel(fresh);
+        else if(!fresh || !fresh.enabled) this.closePluginPanel();
+      }, p.enabled ? '插件已关闭' : '插件已开启');
+    },
+    openPluginPanel(p){
+      if(!p || !p.enabled || !p.has_panel) return;
+      this.closePluginPanel();
+      this.activePlugin = p;
+      this.pluginFrameHeight = 460;
+      this.$nextTick(()=>{
+        if(this.$refs.pluginFrame && window.ArkPluginHost){
+          window.ArkPluginHost.mount(this.$refs.pluginFrame, p, {onHeight:(h)=>{this.pluginFrameHeight=h;}});
+        }
+      });
+    },
+    closePluginPanel(){
+      if(window.ArkPluginHost) window.ArkPluginHost.unmount();
+      this.activePlugin = null;
+    },
+    async uploadPluginFile(file){
+      if(!file) return;
+      if(!/\.zip$/i.test(file.name)){ this.toast('ERROR','只支持 ZIP 插件包',true); return; }
+      if(file.size > 4 * 1024 * 1024){ this.toast('ERROR','ZIP 不能超过 4MB',true); return; }
+      await this.guard(async()=>{
+        const qs = new URLSearchParams({filename:file.name});
+        if(this.pluginName.trim()) qs.set('name', this.pluginName.trim());
+        const res = await fetch('/api/plugins/install?' + qs.toString(), {
+          method:'POST', headers:{'Content-Type':'application/zip'}, body:file
+        });
+        let data = {};
+        try { data = await res.json(); } catch(e){}
+        if(!res.ok) throw new Error(data.detail || '插件安装失败');
+        this.pluginName = '';
+        await this.loadPlugins();
+      }, '插件已安装，打开开关后启用');
+    },
+    onPluginDrop(e){
+      this.pluginDrag = false;
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if(file) this.uploadPluginFile(file);
+    },
+    onPluginFile(e){
+      const file = e.target.files && e.target.files[0];
+      if(file) this.uploadPluginFile(file);
+      e.target.value = '';
+    },
+    async createPlugin(){
+      const name = this.pluginName.trim();
+      if(!name){ this.toast('ERROR','先填写插件名称',true); return; }
+      await this.guard(async()=>{
+        const data = await this.api('/api/plugins/template', {method:'POST', body:{name, id:this.pluginId.trim() || null}});
+        this.pluginName = '';
+        this.pluginId = '';
+        await this.loadPlugins();
+      }, '模板已创建，打开开关后出现在插件面板');
+    },
+    async deletePlugin(p){
+      if(!confirm('确认删除插件 ' + p.id + '？插件数据目录会保留。')) return;
+      await this.guard(async()=>{
+        await this.api('/api/plugins/' + encodeURIComponent(p.id), {method:'DELETE'});
+        if(this.activePlugin && this.activePlugin.id===p.id) this.closePluginPanel();
+        await this.loadPlugins();
+      }, '插件已删除');
+    },
+
     /* ---- model routing ---- */
     async loadModels(){ try { this.models = await this.api('/api/models'); } catch(e){} },
     async setRoute(role, pid){
       if(!pid) return;
       await this.guard(async()=>{
         this.models = await this.api('/api/models/route',{method:'POST',body:{role,profile:pid}});
-      }, role==='main' ? '主模型已切换' : '分模型已切换');
+      }, role==='main' ? '主模型已切换' : role==='sticker_tag' ? '打标模型已切换' : '分模型已切换');
     },
     resetProfileForm(){ this.profileForm = { id:null, name:'', url:'', key:'', model:'' }; },
     async testProfile(p, type = 'text'){

@@ -6,6 +6,7 @@
 import asyncio
 import base64
 import json
+import mimetypes
 import os
 import socket
 import struct
@@ -16,18 +17,20 @@ import zlib
 
 import aiohttp
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 import part_command
 import part_prompt
 import part_record
 import part_api
+import part_plugin
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(BASE_DIR, "QQ-BOT.log")
-INDEX_FILE = os.path.join(BASE_DIR, "webui", "index.html")
+WEBUI_DIR = os.path.join(BASE_DIR, "webui")
+INDEX_FILE = os.path.join(WEBUI_DIR, "index.html")
 DATA_DIR = os.path.join(BASE_DIR, "data")
 PROACTIVE_REQ_FILE = os.path.join(DATA_DIR, "proactive_request.json")
 
@@ -80,6 +83,7 @@ class SettingsUpdate(BaseModel):
     sticker_capture_admin_only: bool | None = None
     sticker_capture_probability: float | None = None
     sticker_autotag_enabled: bool | None = None
+    sticker_autotag_batch: int | None = None
     known_bots: list | None = None
     bot_decay_step: float | None = None
     proactive_enabled: bool | None = None
@@ -118,6 +122,15 @@ class MusingBatch(BaseModel):
 
 class BatchDelete(BaseModel):
     user_ids: list[str]
+
+
+class PluginToggle(BaseModel):
+    enabled: bool
+
+
+class PluginTemplate(BaseModel):
+    name: str
+    id: str | None = None
 
 
 class HotEdit(BaseModel):
@@ -409,6 +422,129 @@ def proactive_poke(body: ProactivePoke | None = None):
     return {"ok": True, "queued_at": payload["queued_at"]}
 
 
+@app.get("/api/plugins")
+def plugin_list():
+    return {
+        "api_version": part_plugin.PLUGIN_API_VERSION,
+        "plugins": part_plugin.inspect_plugins(),
+    }
+
+
+@app.post("/api/plugins/{plugin_id}/toggle")
+def plugin_toggle(plugin_id: str, body: PluginToggle):
+    try:
+        part_plugin.set_plugin_enabled(plugin_id, body.enabled)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "id": plugin_id, "enabled": body.enabled}
+
+
+@app.post("/api/plugins/reload")
+def plugin_reload():
+    part_plugin.request_plugin_reload()
+    return {"ok": True, "message": "已请求重载，机器人将在数秒内应用"}
+
+
+@app.post("/api/plugins/install")
+async def plugin_install(request: Request, filename: str = "", name: str = ""):
+    data = await request.body()
+    try:
+        result = part_plugin.install_plugin_zip(data, filename=filename, name=name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, **result}
+
+
+@app.post("/api/plugins/template")
+def plugin_template(body: PluginTemplate):
+    try:
+        result = part_plugin.create_plugin_template(body.name, body.id or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, **result}
+
+
+@app.delete("/api/plugins/{plugin_id}")
+def plugin_delete(plugin_id: str):
+    try:
+        part_plugin.delete_plugin(plugin_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"ok": True, "id": plugin_id}
+
+
+@app.post("/api/plugins/{plugin_id}/rpc/{method}")
+async def plugin_rpc(plugin_id: str, method: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    data = body.get("input") if isinstance(body, dict) else body
+    try:
+        result = await part_plugin.call_plugin_backend(plugin_id, method, data)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"插件后端失败: {type(e).__name__}")
+    try:
+        json.dumps(result, ensure_ascii=False)
+    except Exception:
+        result = str(result)
+    return {"result": result}
+
+
+@app.get("/plugin-host.js")
+def plugin_host_js():
+    path = os.path.join(WEBUI_DIR, "plugin_host.js")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "plugin host 不存在")
+    return FileResponse(path, media_type="application/javascript; charset=utf-8", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/plugin-bridge.js")
+def plugin_bridge_js():
+    path = os.path.join(WEBUI_DIR, "plugin_bridge.js")
+    if not os.path.isfile(path):
+        raise HTTPException(404, "plugin bridge 不存在")
+    return FileResponse(path, media_type="application/javascript; charset=utf-8", headers={"Cache-Control": "no-store"})
+
+
+def _plugin_file_response(path):
+    suffix = os.path.splitext(path)[1].lower()
+    media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    if suffix in (".html", ".htm"):
+        try:
+            text = open(path, "r", encoding="utf-8").read()
+        except UnicodeError:
+            return Response(status_code=400, content="插件页面不是 UTF-8")
+        if "/plugin-bridge.js" not in text:
+            tag = '<script src="/plugin-bridge.js"></script>'
+            if "</head>" in text.lower():
+                index = text.lower().find("</head>")
+                text = text[:index] + tag + text[index:]
+            else:
+                text = tag + text
+        return Response(content=text, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/plugin-assets/{plugin_id}/{asset_path:path}")
+def plugin_asset(plugin_id: str, asset_path: str):
+    if not part_plugin.is_plugin_enabled(plugin_id):
+        raise HTTPException(404, "插件未启用")
+    suffix = os.path.splitext(asset_path)[1].lower()
+    if suffix not in (".html", ".htm", ".js", ".css", ".json", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".woff", ".woff2", ".ttf", ".otf", ".ico"):
+        raise HTTPException(404, "插件资源类型不允许")
+    if os.path.basename(asset_path).lower() in ("manifest.json", "plugin.json", "requirements.txt"):
+        raise HTTPException(404, "插件元信息不允许访问")
+    path = part_plugin.plugin_asset_file(plugin_id, asset_path)
+    if path is None:
+        raise HTTPException(404, "插件资源不存在")
+    return _plugin_file_response(str(path))
+
+
 @app.get("/api/settings")
 def get_settings():
     return part_record.load_settings()
@@ -533,6 +669,11 @@ def update_settings(body: SettingsUpdate):
         cur["sticker_capture_probability"] = value
     if "sticker_autotag_enabled" in data:
         cur["sticker_autotag_enabled"] = bool(data["sticker_autotag_enabled"])
+    if "sticker_autotag_batch" in data:
+        value = int(data["sticker_autotag_batch"])
+        if not 1 <= value <= 10:
+            raise HTTPException(400, "每轮打标张数范围 1-10")
+        cur["sticker_autotag_batch"] = value
     if "known_bots" in data:
         bots = [str(b).strip() for b in data["known_bots"] if str(b).strip()]
         cur["known_bots"] = list(dict.fromkeys(bots))

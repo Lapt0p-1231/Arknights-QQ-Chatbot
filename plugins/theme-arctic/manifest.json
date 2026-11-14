@@ -1,0 +1,10 @@
+{
+  "id": "theme-arctic",
+  "name": "极地终端",
+  "version": "1.0.0",
+  "api_version": 1,
+  "type": "theme",
+  "enabled": false,
+  "description": "冰蓝与青绿色的终端配色",
+  "stylesheet": "theme.css"
+}

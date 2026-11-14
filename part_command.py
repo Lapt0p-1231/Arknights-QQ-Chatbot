@@ -46,8 +46,15 @@ CMD_HELP_TEXT = (
 
 def build_help(admin=False, in_group=False):
     """按权限和场景生成指令列表：普通用户只看到自己能用的。"""
-    lines = [
-        "[指令列表]",
+    plugin_cmds = []
+    try:
+        import part_plugin
+        plugin_cmds = part_plugin.get_active_commands_help(admin=admin, in_group=in_group)
+    except Exception:
+        pass
+
+    lines = ["[指令列表]"]
+    lines += [
         "/sticker 或 /表情 - 查看公共表情库统计",
         "/rl - 重新生成上一条回复",
         "/user set <用户信息> - 记录你的信息",
@@ -88,6 +95,9 @@ def build_help(admin=False, in_group=False):
             "/bot step <百分比> - 设置连续互动概率衰减步长(0-100)",
             "/poke 或 /戳我 或 /搭讪 - 立即触发一次主动搭讪（群内可用 /冒泡）",
         ]
+    if plugin_cmds:
+        lines.append("—— 插件指令 ——")
+        lines.extend(plugin_cmds)
     lines.append("/cmd help - 查看本指令列表")
     return "\n".join(lines)
 # =====================

@@ -839,6 +839,8 @@ DEFAULT_SETTINGS = {
     "sticker_capture_probability": 30.0,
     # 表情包自动打标：默认关闭，是否调用由用户在 WebUI 决定；使用模型见 api.json 的 sticker_tag 路由
     "sticker_autotag_enabled": False,
+    # 每轮打标张数（打标任务批量处理，积压时明显更快；1 张 ≈ 1 次视觉调用）
+    "sticker_autotag_batch": 3,
     # 机器人防刷软保底：已知其他机器人 QQ 列表 + 连续互动概率步长衰减（从 100% 开始，每轮减去 step%）
     "known_bots": [],
     "bot_decay_step": 25.0,
@@ -888,7 +890,7 @@ def toggle_at_only():
     settings = load_settings()
     settings["at_only"] = not settings.get("at_only", True)
     save_settings(settings)
-    print(f"[设置] 群聊触发方式已切换为：{'仅@' if settings['at_only'] else '@或喊名字'}")
+    print(f"[设置] 群聊触发方式已切换为：{'仅提及（@/喊名字）' if settings['at_only'] else '自动插嘴 + 提及'}")
     return settings["at_only"]
 
 # ====== /cd set 和 /atcd set ======

@@ -15,6 +15,7 @@ import part_prompt
 import part_api
 import part_search
 import part_sticker
+import part_plugin
 import os
 
 # Windows 控制台默认 GBK，打印 emoji 会直接 UnicodeEncodeError 干崩主循环
@@ -43,7 +44,12 @@ def _env_int(name, default=0):
 
 def _parse_admin_list():
     raw = os.environ.get("QQ_BOT_ADMIN_QQ")
-    values = raw.split(",") if raw else (_BOOT_SETTINGS.get("admin_qq") or [])
+    if raw:
+        values = raw.split(",")
+    else:
+        values = _BOOT_SETTINGS.get("admin_qq") or []
+        if isinstance(values, (str, int)):
+            values = [values]
     result = []
     for item in values:
         try:
@@ -57,6 +63,11 @@ def _parse_admin_list():
 # ===== 机器人QQ ======
 BOT_QQ = _env_int("QQ_BOT_QQ", _BOOT_SETTINGS.get("bot_qq") or 0)
 # ====================
+
+# ===== 服务监听地址与端口 =====
+WS_HOST = os.environ.get("QQ_BOT_WS_HOST", "0.0.0.0")
+WS_PORT = _env_int("QQ_BOT_WS_PORT", 8080)
+# ==============================
 
 # ===== 管理员QQ =====
 ADMIN_QQ = _parse_admin_list()
@@ -145,6 +156,8 @@ def log(text):
 
 # 将主程序 logger 注入子模块，避免子模块 import 连字符模块名失败
 part_sticker.set_logger(log)
+part_plugin.set_logger(log)
+plugin_manager = part_plugin.PluginManager()
 # ====================
 
 # ===== JSON 宽松解析 =====
@@ -333,9 +346,8 @@ def naturalize_chat_text(text):
     return text.strip("，, ")
 # ====================
 
-# ===== 破甲辅助 ======
-# audit 伪审核包装已移除：实测对 Gemini 4 反效果（模型识破后警觉升级）。
-# 拒答检测同样停用（暂不需要破甲场景）。词表保留备用，恢复时在 call_your_api 里加回 is_refusal_text 判断即可。
+# ===== 拒答检测辅助 ======
+# 词表保留备用，恢复时在 call_your_api 里加回 is_refusal_text 判断即可。
 _REFUSAL_MARKERS = (
     "安全准则", "安全策略", "内容政策", "内容准则", "安全指南",
     "作为AI", "作为人工智能", "作为语言模型",
@@ -750,6 +762,9 @@ def enqueue_scope(scope, factory, label="会话任务"):
     if queue is None:
         queue = asyncio.Queue()
         _scope_queues[scope] = queue
+    worker = _scope_workers.get(scope)
+    if worker is None or worker.done():
+        # worker 异常退出时保留队列，重建消费者继续处理积压任务
         _scope_workers[scope] = create_safe_task(
             _scope_worker(scope, queue), f"会话队列-{scope}"
         )
@@ -848,7 +863,7 @@ def parse_message_segments(event, bot_qq):
             result["text"] += str(seg_data.get("text", ""))
         elif seg_type == "reply":
             result["quoted_id"] = seg_data.get("id")
-        elif seg_type == "mface":
+        elif seg_type in ("mface", "market_face"):
             # 商城表情：url 与 summary 可以同时保留（原分支互斥会丢 summary）
             if seg_data.get("url") and result["image_url"] is None:
                 result["image_url"] = seg_data["url"]
@@ -859,7 +874,9 @@ def parse_message_segments(event, bot_qq):
         elif seg_type == "image":
             if seg_data.get("url") and result["image_url"] is None:
                 result["image_url"] = seg_data["url"]
-                result["image_is_meme"] = str(seg_data.get("sub_type")) == "1"
+            _sub = str(seg_data.get("sub_type") or "0")
+            if _sub in ("1", "1.0") or "emoji_id" in seg_data or "emojiId" in seg_data:
+                result["image_is_meme"] = True
     return result
 
 
@@ -1037,15 +1054,15 @@ async def run_search(scope, query, settings):
         )
     except Exception as e:
         log(f"[搜索] {scope} 检索异常: {e}")
-        # 失败不给满冷却，60 秒后即可重试
-        _last_search_time[scope] = now - cooldown + 60
+        # 失败不给满冷却，最多 60 秒后即可重试
+        _last_search_time[scope] = now - max(0.0, cooldown - 60.0)
         return None
     if result:
         log(f"[搜索] {scope} 检索完成（{len(result)} 字）: {result[:60]}")
     else:
         log(f"[搜索] {scope} 未搜到有效资料，按无资料回复")
-        # 无结果说明资料本来就不存在，短冷却防连续重搜
-        _last_search_time[scope] = now - cooldown + 120
+        # 无结果说明资料本来就不存在，短冷却防连续重搜（最多 120 秒）
+        _last_search_time[scope] = now - max(0.0, cooldown - 120.0)
     return result
 
 
@@ -1147,7 +1164,7 @@ async def summarize_memory(user_id, update_favorability=True):
 # 主模型
 
 async def call_your_api(user_id, message, group_id=None, image=None, search_context=None,
-                        expected_epoch=None, user_recorded=False):
+                        expected_epoch=None, user_recorded=False, is_direct=True):
     route = part_api.get_route("main")
     if not route.get("key"):
         return "[错误] 未配置主模型端点（api.json / WebUI 模型路由）"
@@ -1203,11 +1220,31 @@ async def call_your_api(user_id, message, group_id=None, image=None, search_cont
     if memory.get("mode") == "聊天" and chat_reminder:
         messages_with_prompt.append({"role": "system", "content": chat_reminder})
 
-    # 群聊在末尾再压一次：只回应最后一条，防止模型逐条回应长上下文越写越长
+    # 群聊在末尾注入纪律：区分“直接被叫正面互动”与“路过旁听插嘴吐槽”
     if group_id is not None:
         group_reminder = load_internal_prompt("12_群聊回复.txt")
         if group_reminder:
             messages_with_prompt.append({"role": "system", "content": group_reminder})
+
+        if not is_direct:
+            interject_prompt = (
+                "【情境纪律：旁听插嘴模式】\n"
+                "群友们当前正在彼此闲聊或讨论，并非在向你提问，也没有人在找你说话（对方可能在自言自语，或正在和群里其他人交流）。\n"
+                "你此时的身份是一个正在围观屏幕的普通群友，只是被话题吸引顺嘴插一句吐槽或感想。\n"
+                "严格执行以下铁律：\n"
+                "1. 严禁出现“你怎么了”、“你在问我吗”、“我来帮你解答”、“请问”、“你说的对”等第二人称迎合/解答腔调。\n"
+                "2. 严禁使用第二人称“你/你们”去指代最后发言的人，对方不是你的对话目标，不要以对方为交谈对象。\n"
+                "3. 严禁替被@的人回答其个人私事。\n"
+                "4. 必须像旁观者自言自语一样发表第三方观点、吐槽、调侃或感慨（例如：“确实离谱”、“笑死”、“我也卡在这关了”、“血压已经上来了”）。\n"
+                "5. 一句话说完就走，字数简短（建议20字以内），严禁反问或向对方提问。"
+            )
+            messages_with_prompt.append({"role": "system", "content": interject_prompt})
+        else:
+            direct_prompt = (
+                "【情境纪律：正面互动模式】\n"
+                "当前群友正在明确 @你 或呼唤你的名字与你对话。请根据你的角色人设正常回应对方。"
+            )
+            messages_with_prompt.append({"role": "system", "content": direct_prompt})
 
     # 联网检索资料：临时的 system 消息注入，不进历史不污染记忆
     if search_context:
@@ -1243,6 +1280,15 @@ async def call_your_api(user_id, message, group_id=None, image=None, search_cont
         reply = strip_trailing_period(clean_reply_format(reply))
         if memory.get("mode") == "聊天":
             reply = naturalize_chat_text(reply)
+        # 模型偶尔会自己写 [表情:xxx]，入库前剥掉，避免污染后续上下文
+        reply = re.sub(r"\[表情[:：][^\]]+\]", "", reply).strip()
+        reply = await plugin_manager.apply_reply_hooks(
+            reply, str(user_id), group_id=group_id, message=message
+        )
+        if reply is None:
+            log(f"[插件] 回复被插件拦截 user={user_id}")
+            return None
+        reply = reply.strip()
         if not reply:
             # 模型拒答/空回复：静默跳过，不入库不发送，避免 None 污染历史
             log(f"[回复] 模型返回空内容（可能被安全策略拦截），本条跳过 user={user_id}")
@@ -1473,6 +1519,10 @@ async def autotag_one_sticker(entry, settings):
             patch["intensity"] = max(0.0, min(1.0, float(intensity)))
         await part_sticker.update_entry_tags(key, patch)
         log(f"[表情打标] 完成 {key}: emotion={emotion} tags={tags}")
+        if entry.get("_kind") == "images":
+            moved = await asyncio.to_thread(part_sticker.move_root_image_to_bucket, key, emotion)
+            if moved:
+                log(f"[表情打标] 已移入 {part_sticker.FOLDER_NAMES.get(emotion)}: {key}")
     except Exception as e:
         attempts = int(entry.get("tag_attempts", 0) or 0) + 1
         await part_sticker.update_entry_tags(key, {"tag_attempts": attempts})
@@ -1480,18 +1530,30 @@ async def autotag_one_sticker(entry, settings):
 
 
 async def sticker_autotag_task():
+    """后台打标：每轮处理 sticker_autotag_batch 张。
+    有积压时缩短轮询间隔尽快追平，跑空后回到 60 秒一轮，避免长期空转。"""
     while True:
+        delay = 60
         try:
             settings = await asyncio.to_thread(part_record.load_settings)
-            if settings.get("sticker_autotag_enabled"):
-                entries = await asyncio.to_thread(part_sticker.get_untagged_entries, 1)
+            if settings.get("sticker_autotag_enabled") and settings.get("sticker_enabled", True):
+                # 没配路由/没提示词时不做无意义轮询（否则会在积压模式下每 10 秒刷一条日志）
+                if not part_api.get_route("sticker_tag").get("key") or not load_internal_prompt("16_表情包打标.txt"):
+                    await asyncio.sleep(60)
+                    continue
+                batch = int(settings.get("sticker_autotag_batch", 3) or 3)
+                batch = max(1, min(10, batch))
+                entries = await asyncio.to_thread(part_sticker.get_untagged_entries, batch)
                 for entry in entries:
                     await autotag_one_sticker(entry, settings)
+                if entries:
+                    # 本轮装满说明还有积压，10 秒后继续；已跑空则等下一轮
+                    delay = 10 if len(entries) >= batch else 60
         except asyncio.CancelledError:
             raise
         except Exception as e:
             log(f"[表情打标] 任务异常: {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(delay)
 
 
 # ====== 后台回复 ======
@@ -1521,9 +1583,13 @@ async def reply_private(websocket, user_id, msg_text, image=None, search_context
         mood = (memory.get("state") or {}).get("mood", "")
 
         if is_duel:
+            log(f"[斗图] 私聊 {user_id} 触发斗图，准备反击")
             _, sticker_seg = await part_sticker.process_reply_stickers("", scope, settings, is_duel=True, mood=mood)
             if sticker_seg:
                 await send_sticker_message(websocket, sticker_seg, f"私聊 {user_id}", user_id=user_id)
+                log(f"[斗图] 私聊 {user_id} 已发出反击表情")
+            else:
+                log(f"[斗图] 私聊 {user_id} 无可用表情，跳过")
             return
 
         # 在本会话任务开头落 user 消息：同一会话串行处理，历史顺序不会被旧任务覆盖
@@ -1564,7 +1630,7 @@ async def reply_private(websocket, user_id, msg_text, image=None, search_context
 
 
 async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_to=None,
-                      search_context=None, is_duel=False):
+                      search_context=None, is_duel=False, is_direct=True):
     scope = f"group_{group_id}"
     try:
         settings = await asyncio.to_thread(part_record.load_settings)
@@ -1574,31 +1640,25 @@ async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_
         mood = (user_mem.get("state") or {}).get("mood") or (group_mem.get("state") or {}).get("mood", "")
 
         if is_duel:
+            log(f"[斗图] 群 {group_id} 触发斗图，准备反击")
             _, sticker_seg = await part_sticker.process_reply_stickers("", scope, settings, is_duel=True, mood=mood)
             if sticker_seg:
                 await send_sticker_message(websocket, sticker_seg, f"群 {group_id}", group_id=group_id)
+                log(f"[斗图] 群 {group_id} 已发出反击表情")
+            else:
+                log(f"[斗图] 群 {group_id} 无可用表情，跳过")
             return
 
         reply = await call_your_api(
             mem_key, msg_text, group_id=group_id, image=image,
-            search_context=search_context, expected_epoch=epoch0, user_recorded=True
+            search_context=search_context, expected_epoch=epoch0, user_recorded=True,
+            is_direct=is_direct
         )
         if reply is None or reply.startswith("[错误]"):
             return
         sticker_pending = await decide_sticker(
             settings, scope, msg_text, mood, group_mem.get("chat_history", []), reply_text=reply
         )
-        # 引用判断：目标消息距今超过阈值条才引用，避免每条都挂引用
-        quote = None
-        if reply_to is not None:
-            threshold = int(settings.get("quote_threshold", 3))
-            newer = await asyncio.to_thread(
-                part_record.count_group_history_after, group_id, reply_to
-            )
-            if newer >= threshold:
-                quote = reply_to
-                log(f"[引用] 群 {group_id} 目标消息距今 {newer} 条（阈值 {threshold}），引用发送")
-
         clean_text, sticker_seg = await part_sticker.process_reply_stickers(
             reply, scope, settings, mood=mood, pending=sticker_pending
         )
@@ -1606,6 +1666,18 @@ async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_
             if await asyncio.to_thread(part_record.get_epoch, scope) != epoch0:
                 log(f"[记忆] 群 {group_id} 发送前记忆已被清空，放弃发送")
                 return
+
+            # 紧贴发送前最后一刻才计算距今条数与引用，消除模型生成与表情判定的几十秒时延
+            quote = None
+            if reply_to is not None:
+                threshold = int(settings.get("quote_threshold", 3))
+                newer = await asyncio.to_thread(
+                    part_record.count_group_history_after, group_id, reply_to
+                )
+                if newer >= threshold:
+                    quote = reply_to
+                    log(f"[引用] 群 {group_id} 目标消息距今 {newer} 条（阈值 {threshold}），引用发送")
+
             await part_command.send_group(websocket, group_id, clean_text, reply_to=quote)
             log(f"[回复] 已回复群 {group_id}: {clean_text[:50]}")
         if sticker_seg:
@@ -1624,19 +1696,23 @@ async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_
 # ====== 消息处理 ======
 async def _recv_loop(websocket, queue):
     """只负责收：API 响应回填 pending future，消息事件进队列。"""
-    async for raw_message in websocket:
-        try:
-            event = json.loads(raw_message)
-        except Exception:
-            continue
-        echo = event.get("echo")
-        if echo and echo in _pending_api:
-            fut = _pending_api.pop(echo)
-            if not fut.done():
-                fut.set_result(event)
-            continue
-        if event.get("post_type") == "message":
-            await queue.put(event)
+    try:
+        async for raw_message in websocket:
+            try:
+                event = json.loads(raw_message)
+            except Exception:
+                continue
+            echo = event.get("echo")
+            if echo and echo in _pending_api:
+                fut = _pending_api.pop(echo)
+                if not fut.done():
+                    fut.set_result(event)
+                continue
+            if event.get("post_type") == "message":
+                await queue.put(event)
+    finally:
+        # 对端断开/接收任务结束：放哨兵让 handler 退出，避免旧连接占着队列
+        await queue.put(None)
 
 
 async def handler(websocket):
@@ -1648,6 +1724,8 @@ async def handler(websocket):
     try:
         while True:
             event = await queue.get()
+            if event is None:
+                break
             # 处理消息
             if event.get("post_type") == "message":
                 # 同一条消息去重
@@ -1663,17 +1741,9 @@ async def handler(websocket):
 
                 admin = part_command.is_admin(event, ADMIN_QQ)
 
-                # 捕获过滤：总开关 / 仅管理员 / 非管理员按概率抓取
+                # 捕获过滤：总开关 / 仅管理员 / 概率抓取（统一走 part_sticker.should_capture_sticker）
                 settings = await asyncio.to_thread(part_record.load_settings)
-                _cap_enabled = settings.get("sticker_capture_enabled", True)
-                _cap_admin_only = settings.get("sticker_capture_admin_only", True)
-                _cap_prob = float(settings.get("sticker_capture_probability", 30.0))
-                should_capture = False
-                if _cap_enabled:
-                    if _cap_admin_only:
-                        should_capture = admin
-                    else:
-                        should_capture = admin or (random.random() * 100 < _cap_prob)
+                should_capture = part_sticker.should_capture_sticker(settings, admin)
 
                 # ===== 私聊消息 ======
                 if event.get("message_type") == "private":
@@ -1684,7 +1754,11 @@ async def handler(websocket):
                     image_is_meme = parsed["image_is_meme"]
                     quoted_id = parsed["quoted_id"]
 
-                    if not msg_text.strip() and not image_url:
+                    if (
+                        not msg_text.strip()
+                        and not image_url
+                        and not part_sticker.is_incoming_pure_sticker(event)
+                    ):
                         continue
 
                     # 留档：所有说过话的私聊都会出现在档案汇总里
@@ -1714,6 +1788,9 @@ async def handler(websocket):
                             )
                         enqueue_scope(f"private_{user_id}", job, "私聊重生成")
 
+                    if await plugin_manager.handle_command(msg_text, event, admin):
+                        continue
+
                     if await part_command.handle_command(
                         websocket, event, msg_text, admin,
                         _on_private_rl,
@@ -1728,11 +1805,41 @@ async def handler(websocket):
                         log(f"[表情] 当前处于「纯捕获模式」，已捕获表情，跳过回复私聊 {user_id}")
                         continue
 
+                    # 斗图模式：纯表情/纯图片直接反击，绕过频率限制和识图/搜索
+                    if (
+                        part_sticker.is_incoming_pure_sticker(event)
+                        and settings.get("sticker_duel_mode", False)
+                        and settings.get("sticker_enabled", True)
+                    ):
+                        log(f"[斗图] 私聊 {user_id} 收到纯表情/图片，进入斗图")
+                        if should_capture:
+                            create_safe_task(part_sticker.capture_from_event(event), "表情捕获")
+                        enqueue_scope(
+                            f"private_{user_id}",
+                            lambda: reply_private(
+                                websocket, user_id, msg_text, None, None,
+                                is_duel=True, message_id=mid
+                            ),
+                            "私聊斗图"
+                        )
+                        continue
+
                     # 频率上限
                     now = time.time()
                     cooldown = settings.get("reply_cooldown", REPLY_COOLDOWN)
                     rate_key = f"private_{user_id}"
                     if now - _last_reply_time.get(rate_key, 0) < cooldown:
+                        # 冷却期也要留下 user 时间戳，否则主动搭讪会误判“用户没再说话”
+                        try:
+                            _epoch_now = await asyncio.to_thread(
+                                part_record.get_epoch, str(user_id)
+                            )
+                            await asyncio.to_thread(
+                                part_record.append_history, str(user_id), "user",
+                                msg_text.strip() or "[图片]", mid, _epoch_now
+                            )
+                        except Exception as _e:
+                            log(f"[频率] 私聊 {user_id} 冷却期写入历史失败: {_e}")
                         log(f"[频率] 私聊 {user_id} 回复间隔不足 {cooldown:g} 秒，已跳过")
                         continue
                     _last_reply_time[rate_key] = now
@@ -1764,7 +1871,11 @@ async def handler(websocket):
                     ):
                         search_query = await extract_search_query_private(user_id, msg_text)
                     search_ctx = await run_search(search_scope, search_query, settings)
-                    is_duel = part_sticker.is_incoming_pure_sticker(event) and settings.get("sticker_duel_mode", False)
+                    is_duel = (
+                        part_sticker.is_incoming_pure_sticker(event)
+                        and settings.get("sticker_duel_mode", False)
+                        and settings.get("sticker_enabled", True)
+                    )
                     enqueue_scope(
                         f"private_{user_id}",
                         lambda: reply_private(
@@ -1798,7 +1909,11 @@ async def handler(websocket):
                     image_is_meme = parsed["image_is_meme"]
                     quoted_id = parsed["quoted_id"]
 
-                    if not msg_text.strip() and not image_url:
+                    if (
+                        not msg_text.strip()
+                        and not image_url
+                        and not part_sticker.is_incoming_pure_sticker(event)
+                    ):
                         continue
 
                     sender = event.get("sender", {})
@@ -1812,6 +1927,9 @@ async def handler(websocket):
                     # 喊名字与@同级触发、同冷却档；群聊一律使用默认人格
                     is_called = any(name in msg_text for name in name_keywords)
                     triggered = is_at_me or is_called
+                    # 管理员在群里可直接用 / 指令，不必先 @ 或喊名字；普通成员仍需提及
+                    if admin and msg_text.strip().startswith("/"):
+                        triggered = True
 
                     # 指令只在被触发时响应，且不进群共享档案（未@时不处理，防止群友使唤别家bot时乱插嘴）
                     if triggered and msg_text.strip().startswith("/"):
@@ -1819,6 +1937,9 @@ async def handler(websocket):
                             log(f"[指令] 忽略来自已知机器人 {user_id} 的指令: {msg_text.strip()[:30]}")
                             continue
                         mem_key = f"group_{group_id}_{user_id}"
+
+                        if await plugin_manager.handle_command(msg_text, event, admin):
+                            continue
 
                         def _on_group_rl(mem_key=mem_key):
                             async def job():
@@ -1862,6 +1983,26 @@ async def handler(websocket):
                         if should_capture:
                             create_safe_task(part_sticker.capture_from_event(event), "表情捕获")
                         log(f"[表情] 当前处于「纯捕获模式」，已捕获表情，跳过回复群聊 {group_id}")
+                        continue
+
+                    # 斗图模式：纯表情/纯图片直接反击，绕过群聊判断、@限制、频率冷却和识图/搜索
+                    if (
+                        not is_from_bot
+                        and part_sticker.is_incoming_pure_sticker(event)
+                        and settings.get("sticker_duel_mode", False)
+                        and settings.get("sticker_enabled", True)
+                    ):
+                        log(f"[斗图] 群 {group_id} 收到 {nickname} 的纯表情/图片，进入斗图")
+                        if should_capture:
+                            create_safe_task(part_sticker.capture_from_event(event), "表情捕获")
+                        enqueue_scope(
+                            f"group_{group_id}",
+                            lambda: reply_group(
+                                websocket, group_id, f"group_{group_id}_{user_id}", "",
+                                is_duel=True
+                            ),
+                            "群聊斗图"
+                        )
                         continue
 
                     # 频率上限前置：@/喊名字与自动插嘴分开计时，互不占用
@@ -1961,13 +2102,19 @@ async def handler(websocket):
 
                     _last_reply_time[rate_key] = now
                     search_ctx = await run_search(f"group_{group_id}", search_query, settings)
-                    is_duel = part_sticker.is_incoming_pure_sticker(event) and settings.get("sticker_duel_mode", False)
+                    is_duel = (
+                        not is_from_bot
+                        and part_sticker.is_incoming_pure_sticker(event)
+                        and settings.get("sticker_duel_mode", False)
+                        and settings.get("sticker_enabled", True)
+                    )
+                    is_direct = bool(triggered)
                     enqueue_scope(
                         f"group_{group_id}",
-                        lambda: reply_group(
+                        lambda is_direct=is_direct: reply_group(
                             websocket, group_id, f"group_{group_id}_{user_id}", record_text,
                             image=vision_image, reply_to=mid, search_context=search_ctx,
-                            is_duel=is_duel
+                            is_duel=is_duel, is_direct=is_direct
                         ),
                         "群聊回复"
                     )
@@ -1975,7 +2122,8 @@ async def handler(websocket):
         log(f"[错误] 连接断开或发生异常: {e}")
         await send_wechat_alert("死老冯腾讯可能又风控了",f"处理消息时发生异常：{e}")
     finally:
-        _active_ws = None
+        if _active_ws is websocket:
+            _active_ws = None
         recv_task.cancel()
 # =====================
 
@@ -2207,7 +2355,8 @@ async def _send_proactive_private(settings, target_qq, force):
         log(f"[主动] 私聊 {target_qq} 期间记忆已被清空，放弃发送")
         return "记忆已清空，跳过"
     await part_command.send_private(_active_ws, target_qq, clean_text)
-    _mark_proactive_sent(scope)
+    if not force:
+        _mark_proactive_sent(scope)
     log(f"[主动] 已主动向私聊 {target_qq} 发送 ({mode_label}): {clean_text}")
     if sticker_seg:
         await send_sticker_message(_active_ws, sticker_seg, f"私聊 {target_qq}", user_id=target_qq)
@@ -2257,7 +2406,8 @@ async def _send_proactive_group(settings, group_id, force):
         log(f"[主动] 群 {group_id} 期间记忆已被清空，放弃发送")
         return "记忆已清空，跳过"
     await part_command.send_group(_active_ws, group_id, clean_text)
-    _mark_proactive_sent(scope)
+    if not force:
+        _mark_proactive_sent(scope)
     log(f"[主动] 已主动向群 {group_id} 冒泡 ({mode_label}): {clean_text}")
     if sticker_seg:
         await send_sticker_message(_active_ws, sticker_seg, f"群 {group_id}", group_id=group_id)
@@ -2320,28 +2470,36 @@ async def generate_and_send_proactive_message(force=False, specified_user_id=Non
             log(f"[主动] 本轮掷出 {roll:.1f}% >= {prob:g}%，跳过主动搭讪")
             return "掷骰未命中"
 
-    _last_proactive_time = now
-    _save_proactive_time(now)
+    if not force:
+        _last_proactive_time = now
+        _save_proactive_time(now)
     log(f"[主动] 触发主动搭讪流程，目标: {', '.join(f'{k}:{t}' for k, t in targets)}")
 
     results = []
     for kind, target in targets:
         try:
             if kind == "private":
-                r = await run_in_scope(
-                    f"private_{target}",
-                    lambda t=target: _send_proactive_private(settings, t, force),
-                    "主动私聊"
+                r = await asyncio.wait_for(
+                    run_in_scope(
+                        f"private_{target}",
+                        lambda t=target: _send_proactive_private(settings, t, force),
+                        "主动私聊"
+                    ),
+                    timeout=120
                 )
             else:
-                r = await run_in_scope(
-                    f"group_{target}",
-                    lambda t=target: _send_proactive_group(settings, t, force),
-                    "主动群聊"
+                r = await asyncio.wait_for(
+                    run_in_scope(
+                        f"group_{target}",
+                        lambda t=target: _send_proactive_group(settings, t, force),
+                        "主动群聊"
+                    ),
+                    timeout=120
                 )
+            log(f"[主动] 目标 {kind}:{target} 结果: {r}")
             results.append(f"{target}->{r}")
         except asyncio.TimeoutError:
-            log(f"[主动] 目标 {kind}:{target} 调用模型超时(45s)，跳过")
+            log(f"[主动] 目标 {kind}:{target} 处理超时(120s)，跳过")
             results.append(f"{target}->超时")
         except Exception as e:
             log(f"[主动] 目标 {kind}:{target} 处理异常: {e}")
@@ -2437,7 +2595,6 @@ async def musing_task():
 
             due.sort(reverse=True)
             scope = due[0][1]
-            _musing_last_attempt[scope] = now
             epoch0 = await asyncio.to_thread(part_record.get_epoch, scope)
             log(f"[胡思乱想] 档案 {scope} 到期，开始回忆")
 
@@ -2446,10 +2603,12 @@ async def musing_task():
                 safe_float(settings.get("musing_min_importance"), 0.7), scope
             )
             if not memories:
+                _musing_last_attempt[scope] = now
                 log(f"[胡思乱想] 档案 {scope} 没有高重要度记忆，跳过")
                 backoff = 60
                 continue
 
+            ok_count = 0
             for uid, src_id, content in memories:
                 try:
                     route = part_api.get_route("sub")
@@ -2472,11 +2631,21 @@ async def musing_task():
                             part_record.add_vector, uid, musing, "musing",
                             0.0, 0.0, 0.6, src_id, 0.4
                         )
+                        ok_count += 1
                         log(f"[胡思乱想] 基于 {uid} 的记忆生成独白: {musing[:40]}")
                 except asyncio.TimeoutError:
                     log(f"[胡思乱想] 生成超时（{MUSING_TIMEOUT}秒），跳过该条")
                 except Exception as e:
                     log(f"[胡思乱想] 生成失败: {e}")
+            if ok_count:
+                _musing_last_attempt[scope] = now
+            else:
+                # 全部失败：5 分钟后再试，不要等满一个完整周期
+                try:
+                    _, interval = part_record.musing_policy(settings, scope)
+                except Exception:
+                    interval = 60
+                _musing_last_attempt[scope] = now - interval * 60 + 300
             backoff = 60
         except asyncio.CancelledError:
             break
@@ -2487,13 +2656,64 @@ async def musing_task():
 # =====================
 
 
-# ====== 主程序 ======
-async def main():
+async def _plugin_send_private(user_id, text):
+    if not _active_ws:
+        raise RuntimeError("WebSocket 客户端未连接")
+    await part_command.send_private(_active_ws, user_id, text)
+
+
+async def _plugin_send_group(group_id, text):
+    if not _active_ws:
+        raise RuntimeError("WebSocket 客户端未连接")
+    await part_command.send_group(_active_ws, group_id, text)
+
+
+async def _plugin_call_model(role, messages):
+    route = part_api.get_route(role)
+    if not route.get("key"):
+        raise RuntimeError(f"模型路由 {role} 未配置")
+    payload = {
+        "model": route.get("model") or MAIN_MODEL,
+        "messages": messages,
+        "stream": False,
+    }
+    return await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
+
+
+async def plugin_watch_task():
     while True:
         try:
-            async with websockets.serve(handler, "0.0.0.0", 8080):
-                print("程序已启动，等待 实时监控 连接...")
-                global _musing_started, _poke_started, _autotag_started
+            await asyncio.sleep(3)
+            await plugin_manager.reload_if_changed()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log(f"[插件] 监听任务异常: {type(e).__name__}: {e}")
+
+
+_plugin_watch_started = False
+
+
+# ====== 主程序 ======
+async def main():
+    plugin_manager.configure(
+        send_private=_plugin_send_private,
+        send_group=_plugin_send_group,
+        model_caller=_plugin_call_model,
+        settings_provider=part_record.load_settings,
+    )
+    try:
+        await plugin_manager.reload()
+    except Exception as e:
+        log(f"[插件] 初始化加载失败: {type(e).__name__}: {e}")
+    while True:
+        try:
+            async with websockets.serve(handler, WS_HOST, WS_PORT):
+                print(f"程序已启动 ({WS_HOST}:{WS_PORT})，等待 实时监控 连接...")
+                global _musing_started, _poke_started, _autotag_started, _plugin_watch_started
+                if not _plugin_watch_started:
+                    _plugin_watch_started = True
+                    create_safe_task(plugin_watch_task(), "插件监听")
                 if not _musing_started:
                     _musing_started = True
                     create_safe_task(musing_task(), "胡思乱想")
