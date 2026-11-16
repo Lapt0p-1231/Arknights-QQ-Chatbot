@@ -716,6 +716,17 @@ async def prepare_vision(image_url, is_meme, settings, sender_is_admin=True):
     if not data_uri:
         return ("[表情包]" if is_meme else "[图片]"), None
     caption = await vision_caption(data_uri)
+    vision_hook = await plugin_manager.apply_vision_hooks({
+        "image_url": image_url,
+        "is_meme": bool(is_meme),
+        "caption": caption,
+        "data_uri": data_uri,
+    })
+    if vision_hook:
+        if vision_hook.get("action") == "stop":
+            caption = ""
+        else:
+            caption = str(vision_hook.get("caption") or "")
     if caption:
         return f"[{'表情包' if is_meme else '图片'}：{caption}]", data_uri
     return ("[表情包]" if is_meme else "[图片]"), data_uri
@@ -1057,6 +1068,17 @@ async def run_search(scope, query, settings):
         # 失败不给满冷却，最多 60 秒后即可重试
         _last_search_time[scope] = now - max(0.0, cooldown - 60.0)
         return None
+    hook = await plugin_manager.apply_search_hooks({
+        "scope": scope,
+        "query": query,
+        "context": result,
+    })
+    if hook:
+        if hook.get("action") == "stop":
+            result = None
+            log(f"[搜索] {scope} 检索结果被插件拦截")
+        else:
+            result = hook.get("context")
     if result:
         log(f"[搜索] {scope} 检索完成（{len(result)} 字）: {result[:60]}")
     else:
@@ -1156,6 +1178,13 @@ async def summarize_memory(user_id, update_favorability=True):
                 log(f"[记忆] {user_id} 期间记忆已被清空，放弃写回状态")
                 return
             print(f"[记忆] 用户 {user_id} 的状态已更新，好感度 {favorability}")
+            await plugin_manager.emit_hook("after_summary", {
+                "user_id": str(user_id),
+                "state": dict(old_state),
+                "favorability": favorability,
+                "importance": importance,
+                "history": history,
+            })
 
         except Exception as e:
             print(f"[记忆] 用户 {user_id} 总结失败（保留旧状态）: {e}")
@@ -1268,6 +1297,20 @@ async def call_your_api(user_id, message, group_id=None, image=None, search_cont
             {"type": "text", "text": "（最后一条群消息附带的图片）"},
             {"type": "image_url", "image_url": {"url": image}},
         ]})
+
+    prompt_result = await plugin_manager.apply_prompt_hooks({
+        "kind": "chat",
+        "messages": messages_with_prompt,
+        "user_id": str(user_id),
+        "group_id": str(group_id) if group_id is not None else None,
+        "message": message,
+        "mode": memory.get("mode"),
+    })
+    if prompt_result:
+        if prompt_result.get("action") == "stop":
+            log(f"[插件] 主回复提示词被插件拦截 user={user_id}")
+            return None
+        messages_with_prompt = prompt_result["messages"]
 
     payload = {
         "model": route.get("model") or MAIN_MODEL,
@@ -1398,6 +1441,22 @@ async def ai_sticker_judge(settings, message, mood, context, reply_text="", taxo
 
 
 async def decide_sticker(settings, scope, message, mood, context, reply_text=""):
+    decision = await _decide_sticker_core(settings, scope, message, mood, context, reply_text)
+    hook = await plugin_manager.apply_sticker_hooks({
+        "scope": scope,
+        "message": message,
+        "mood": mood,
+        "reply_text": reply_text,
+        "decision": decision,
+    })
+    if hook:
+        if hook.get("action") == "stop":
+            return None
+        return hook.get("decision")
+    return decision
+
+
+async def _decide_sticker_core(settings, scope, message, mood, context, reply_text=""):
     """发布判断：AI 走分模型，PY 走概率；共用冷却。"""
     if not part_sticker.sticker_gate_open(settings, scope):
         return None
@@ -1619,6 +1678,16 @@ async def reply_private(websocket, user_id, msg_text, image=None, search_context
                 return
             await part_command.send_private(websocket, user_id, clean_text)
             log(f"[回复] 已回复私聊 {user_id}: {clean_text[:50]}")
+            await plugin_manager.emit_hook("after_reply", {
+                "kind": "chat",
+                "text": clean_text,
+                "full_text": reply,
+                "user_id": str(user_id),
+                "group_id": None,
+                "message": msg_text,
+                "message_id": message_id,
+                "has_sticker": bool(sticker_seg),
+            })
         if sticker_seg:
             if clean_text.strip():
                 # 文字发完稍作停顿再补表情（0.1~0.3 秒，网络差时也不容易被其他消息顶乱）
@@ -1680,6 +1749,17 @@ async def reply_group(websocket, group_id, mem_key, msg_text, image=None, reply_
 
             await part_command.send_group(websocket, group_id, clean_text, reply_to=quote)
             log(f"[回复] 已回复群 {group_id}: {clean_text[:50]}")
+            member_id = mem_key.rsplit("_", 1)[-1] if "_" in mem_key else mem_key
+            await plugin_manager.emit_hook("after_reply", {
+                "kind": "chat",
+                "text": clean_text,
+                "full_text": reply,
+                "user_id": str(member_id),
+                "group_id": str(group_id),
+                "message": msg_text,
+                "message_id": reply_to,
+                "has_sticker": bool(sticker_seg),
+            })
         if sticker_seg:
             if clean_text.strip():
                 # 文字发完稍作停顿再补表情（0.1~0.3 秒，网络差时也不容易被其他消息顶乱）
@@ -1767,6 +1847,31 @@ async def handler(websocket):
                         part_record.touch_archive, str(user_id),
                         sender.get("card") or sender.get("nickname")
                     )
+
+                    hook = await plugin_manager.apply_message_hooks({
+                        "text": msg_text,
+                        "user_id": str(user_id),
+                        "group_id": None,
+                        "message_type": "private",
+                        "message_id": mid,
+                        "image_url": image_url,
+                        "is_at_me": False,
+                        "is_admin": admin,
+                        "event": event,
+                    })
+                    if hook:
+                        if hook.get("action") == "stop":
+                            continue
+                        if hook.get("action") == "reply":
+                            await part_command.send_private(websocket, user_id, hook.get("text") or "")
+                            continue
+                        msg_text = str(hook.get("text") or "")
+                        if (
+                            not msg_text.strip()
+                            and not image_url
+                            and not part_sticker.is_incoming_pure_sticker(event)
+                        ):
+                            continue
 
                     # 先过指令
                     def _on_private_rl():
@@ -1923,6 +2028,31 @@ async def handler(websocket):
                         part_record.touch_group_archives,
                         group_id, user_id, nickname
                     )
+                    hook = await plugin_manager.apply_message_hooks({
+                        "text": msg_text,
+                        "user_id": str(user_id),
+                        "group_id": str(group_id),
+                        "message_type": "group",
+                        "message_id": mid,
+                        "image_url": image_url,
+                        "is_at_me": bool(is_at_me),
+                        "is_admin": admin,
+                        "is_from_bot": is_from_bot,
+                        "event": event,
+                    })
+                    if hook:
+                        if hook.get("action") == "stop":
+                            continue
+                        if hook.get("action") == "reply":
+                            await part_command.send_group(websocket, group_id, hook.get("text") or "")
+                            continue
+                        msg_text = str(hook.get("text") or "")
+                        if (
+                            not msg_text.strip()
+                            and not image_url
+                            and not part_sticker.is_incoming_pure_sticker(event)
+                        ):
+                            continue
                     name_keywords = settings.get("name_keywords", BOT_NAME_KEYWORDS)
                     # 喊名字与@同级触发、同冷却档；群聊一律使用默认人格
                     is_called = any(name in msg_text for name in name_keywords)
@@ -2253,6 +2383,23 @@ async def _proactive_generate_text(settings, kind, memory, memory_scope):
     """生成一条主动消息文本，返回 (文本, 模式标签, 心情)。"""
     time_desc = get_current_time_desc()
     state_mood = (memory.get("state") or {}).get("mood", "")
+    proactive_group_id = str(memory_scope)[6:] if kind == "group" else None
+
+    async def _finalize(text):
+        text = strip_trailing_period(clean_reply_format(text))
+        if memory.get("mode") == "聊天":
+            text = naturalize_chat_text(text)
+        if len(text) > 60:
+            text = text[:50]
+        if text:
+            checked = await plugin_manager.apply_reply_hooks(
+                text, str(memory_scope), group_id=proactive_group_id,
+                message="", kind="proactive"
+            )
+            if checked is None:
+                return ""
+            text = checked.strip()
+        return text
 
     min_imp = safe_float(settings.get("musing_min_importance"), 0.4)
     memories = await asyncio.to_thread(
@@ -2272,20 +2419,6 @@ async def _proactive_generate_text(settings, kind, memory, memory_scope):
     memory["state"] = {"mood": state.get("mood")} if state.get("mood") else {}
     active_prompt = build_user_prompt(memory_scope, memory)
 
-    prompts = load_proactive_prompts()
-    key = f"{kind}_{'a' if use_type_a else 'b'}"
-    mode_label = PROACTIVE_MODE_LABELS.get(key, "主动消息")
-    section = prompts.get(key, "")
-    if not section:
-        log(f"[主动] 提示词 {PROACTIVE_PROMPT_FILE} 缺少段落 [{key}] 或文件未启用，跳过")
-        return "", "提示词缺失", state_mood
-    mood_hint = f"你当前的心情/状态是：{state_mood}。\n" if state_mood else ""
-    instruction = "\n\n" + (
-        section.replace("{time_desc}", time_desc)
-        .replace("{past_memory}", past_memory)
-        .replace("{mood_hint}", mood_hint)
-    )
-
     # 最近记录只作为“背景资料”塞进 system，不作为对话轮次，
     # 否则模型会自然地把最后一条当成待续写/待回复的内容。
     recent_lines = []
@@ -2303,6 +2436,39 @@ async def _proactive_generate_text(settings, kind, memory, memory_scope):
             + "\n".join(recent_lines)
         )
 
+    prompts = load_proactive_prompts()
+    key = f"{kind}_{'a' if use_type_a else 'b'}"
+    mode_label = PROACTIVE_MODE_LABELS.get(key, "主动消息")
+
+    if key.endswith("_b"):
+        override = await plugin_manager.apply_proactive_hooks({
+            "type": "b",
+            "kind": kind,
+            "scope": str(memory_scope),
+            "time_desc": time_desc,
+            "mood": state_mood,
+            "character_prompt": active_prompt,
+            "recent_lines": list(recent_lines),
+        })
+        if override:
+            if override.get("action") == "stop":
+                return "", "插件拦截", state_mood
+            text = await _finalize(str(override.get("text") or "").strip())
+            if not text:
+                return "", "插件拦截", state_mood
+            return text, str(override.get("mode_label") or "热点冒泡"), state_mood
+
+    section = prompts.get(key, "")
+    if not section:
+        log(f"[主动] 提示词 {PROACTIVE_PROMPT_FILE} 缺少段落 [{key}] 或文件未启用，跳过")
+        return "", "提示词缺失", state_mood
+    mood_hint = f"你当前的心情/状态是：{state_mood}。\n" if state_mood else ""
+    instruction = "\n\n" + (
+        section.replace("{time_desc}", time_desc)
+        .replace("{past_memory}", past_memory)
+        .replace("{mood_hint}", mood_hint)
+    )
+
     anti_continue = "\n\n" + prompts.get("common", "")
     user_prompt = prompts.get("user_prompt") or "请输出你要主动发出去的这一句话："
 
@@ -2312,6 +2478,19 @@ async def _proactive_generate_text(settings, kind, memory, memory_scope):
         {"role": "user", "content": user_prompt},
     ]
 
+    prompt_result = await plugin_manager.apply_prompt_hooks({
+        "kind": "proactive",
+        "messages": messages,
+        "user_id": str(memory_scope),
+        "group_id": str(memory_scope)[6:] if kind == "group" else None,
+        "message": "",
+        "mode": memory.get("mode"),
+    })
+    if prompt_result:
+        if prompt_result.get("action") == "stop":
+            return "", "插件拦截", state_mood
+        messages = prompt_result["messages"]
+
     payload = {
         "model": route.get("model") or MAIN_MODEL,
         "messages": messages,
@@ -2319,11 +2498,7 @@ async def _proactive_generate_text(settings, kind, memory, memory_scope):
         "temperature": 1.0,
     }
     raw = await _post_json(payload, api_url=route.get("url"), api_key=route.get("key"))
-    text = strip_trailing_period(clean_reply_format(raw or ""))
-    if memory.get("mode") == "聊天":
-        text = naturalize_chat_text(text)
-    if len(text) > 60:
-        text = text[:50]
+    text = await _finalize(raw or "")
     return text, mode_label, state_mood
 
 
@@ -2358,6 +2533,17 @@ async def _send_proactive_private(settings, target_qq, force):
     if not force:
         _mark_proactive_sent(scope)
     log(f"[主动] 已主动向私聊 {target_qq} 发送 ({mode_label}): {clean_text}")
+    await plugin_manager.emit_hook("after_reply", {
+        "kind": "proactive",
+        "text": clean_text,
+        "full_text": clean_text,
+        "user_id": str(target_qq),
+        "group_id": None,
+        "message": "",
+        "message_id": None,
+        "has_sticker": bool(sticker_seg),
+        "mode_label": mode_label,
+    })
     if sticker_seg:
         await send_sticker_message(_active_ws, sticker_seg, f"私聊 {target_qq}", user_id=target_qq)
     # 写入热记忆，保证对方回复时对话连贯
@@ -2409,6 +2595,17 @@ async def _send_proactive_group(settings, group_id, force):
     if not force:
         _mark_proactive_sent(scope)
     log(f"[主动] 已主动向群 {group_id} 冒泡 ({mode_label}): {clean_text}")
+    await plugin_manager.emit_hook("after_reply", {
+        "kind": "proactive",
+        "text": clean_text,
+        "full_text": clean_text,
+        "user_id": None,
+        "group_id": str(group_id),
+        "message": "",
+        "message_id": None,
+        "has_sticker": bool(sticker_seg),
+        "mode_label": mode_label,
+    })
     if sticker_seg:
         await send_sticker_message(_active_ws, sticker_seg, f"群 {group_id}", group_id=group_id)
     # 写入群共享历史，群友接话时可顺畅延续
@@ -2612,17 +2809,34 @@ async def musing_task():
             for uid, src_id, content in memories:
                 try:
                     route = part_api.get_route("sub")
-                    payload = {
-                        "model": route.get("model") or SUMMARY_MODEL,
-                        "messages": [
-                            {"role": "system", "content": musing_prompt},
-                            {"role": "user", "content": f"往事：{content}"}
-                        ],
-                        "stream": False
-                    }
-                    musing = clean_reply_format((await asyncio.wait_for(
-                        _post_json(payload, api_url=route.get("url"), api_key=route.get("key")), timeout=MUSING_TIMEOUT
-                    )) or "")
+                    messages = [
+                        {"role": "system", "content": musing_prompt},
+                        {"role": "user", "content": f"往事：{content}"}
+                    ]
+                    hook = await plugin_manager.apply_musing_hooks({
+                        "scope": scope,
+                        "user_id": str(uid),
+                        "memory": content,
+                        "prompt": musing_prompt,
+                        "messages": messages,
+                    })
+                    musing = ""
+                    if hook:
+                        if hook.get("action") == "stop":
+                            continue
+                        if hook.get("text"):
+                            musing = clean_reply_format(hook.get("text"))
+                        elif hook.get("messages"):
+                            messages = hook.get("messages")
+                    if not musing:
+                        payload = {
+                            "model": route.get("model") or SUMMARY_MODEL,
+                            "messages": messages,
+                            "stream": False
+                        }
+                        musing = clean_reply_format((await asyncio.wait_for(
+                            _post_json(payload, api_url=route.get("url"), api_key=route.get("key")), timeout=MUSING_TIMEOUT
+                        )) or "")
                     if musing:
                         if await asyncio.to_thread(part_record.get_epoch, uid) != epoch0:
                             log(f"[胡思乱想] {uid} 期间记忆已被清空，跳过写入")

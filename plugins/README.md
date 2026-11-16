@@ -143,21 +143,108 @@ async def cmd_hello(args: str, event: dict, ctx) -> dict:
 
 ### 4.3 钩子监听 (`ctx.on`)
 
-当前支持的事件钩子：`on_reply`（在大模型生成文本后、入库与发送前触发，支持修改或拦截回复）。
+当前支持的事件钩子：
+
+| 钩子 | 触发时机 | 支持的返回 |
+| :--- | :--- | :--- |
+| `on_message` | 收到消息并留档后、指令与回复处理前 | `stop` / `reply` / `replace` |
+| `on_prompt` | 主回复、主动冒泡调用主模型前 | `stop` / `replace` |
+| `on_reply` | 主回复/主动冒泡文本生成后、发送前 | `stop` / `replace` |
+| `after_reply` | 文本消息发送后（含主动冒泡） | 返回值忽略，仅通知 |
+| `on_proactive` | 自主冒泡生成主动消息前 | `stop` / `replace` |
+| `on_musing` | 胡思乱想生成独白前 | `stop` / `replace` |
+| `on_search` | 联网检索返回后、注入提示词前 | `stop` / `replace` |
+| `on_sticker` | 普通聊天表情发布决策后 | `stop` / `replace` |
+| `on_vision` | 图片识图描述生成后 | `stop` / `replace` |
+| `after_summary` | 记忆总结写回档案后 | 返回值忽略，仅通知 |
+
+统一约定：返回 `None` 或 `{"action": "continue"}` 表示不处理；按 `priority` 从小到大依次执行，`replace` 后的结果会传给下一个插件。
+
+#### `on_message`
+
+payload：`text`、`user_id`、`group_id`、`message_type`、`message_id`、`image_url`、`is_at_me`、`is_admin`、`is_from_bot`、`event`。
 
 ```python
-async def filter_sensitive_reply(payload: dict, ctx) -> dict:
-    """
-    payload: {"text": "模型原始回复", "user_id": "...", "group_id": "...", "message": "用户输入"}
-    """
+async def filter_message(payload, ctx):
+    if "广告" in payload.get("text", ""):
+        return {"action": "stop"}
+    if payload.get("text") == "ping":
+        return {"action": "reply", "text": "pong"}
+    if "敏感词" in payload.get("text", ""):
+        return {"action": "replace", "text": payload["text"].replace("敏感词", "***")}
+    return None
+```
+
+#### `on_prompt`
+
+payload：`kind`（`chat` / `proactive`）、`messages`、`user_id`、`group_id`、`message`、`mode`。
+
+返回 `{"action": "replace", "messages": [...]}` 替换完整消息列表，或返回 `{"action": "replace", "system": "..."}` 替换/插入第一条 system 消息。
+
+```python
+async def inject_prompt(payload, ctx):
+    if payload.get("kind") != "chat":
+        return None
+    messages = list(payload.get("messages") or [])
+    messages.append({"role": "system", "content": "【插件】回复必须少于 20 字。"})
+    return {"action": "replace", "messages": messages}
+```
+
+#### `on_reply`
+
+payload：`kind`（`chat` / `proactive`）、`text`、`user_id`、`group_id`、`message`。
+
+```python
+async def filter_reply(payload, ctx):
     text = payload.get("text", "")
     if "敏感词" in text:
-        return {"action": "stop"}  # 拦截本条回复，机器人将静默不发送
-    # 或者替换回复：
+        return {"action": "stop"}
     return {"action": "replace", "text": text.replace("笨蛋", "天才")}
+```
 
+#### `after_reply`
+
+payload：`kind`（`chat` / `proactive`）、`text`、`full_text`、`user_id`、`group_id`、`message`、`message_id`、`has_sticker`、`mode_label`（仅主动冒泡）。适合做日志、统计、二次通知。
+
+#### `on_proactive`
+
+payload：`type`（`a` 记忆发散 / `b` 时态自生成）、`kind`（`private` / `group`）、`scope`、`time_desc`、`mood`、`character_prompt`、`recent_lines`。
+
+返回 `{"action": "replace", "text": "要发送的内容", "mode_label": "来源标签"}` 替换本次主动消息；异常或空文本自动回退默认逻辑。
+
+#### `on_musing`
+
+payload：`scope`、`user_id`、`memory`（往事的原文）、`prompt`、`messages`。
+
+返回 `{"action": "replace", "text": "直接使用的独白"}`，或 `{"action": "replace", "messages": [...]}` 修改发给模型的提示词。
+
+#### `on_search`
+
+payload：`scope`、`query`、`context`（检索结果，可能为 `None`）。
+
+返回 `{"action": "replace", "text": "新的检索资料"}` 或 `{"action": "replace", "context": None}` 清空资料。
+
+#### `on_sticker`
+
+payload：`scope`、`message`、`mood`、`reply_text`、`decision`（`{"source","emotion","tag"}` 或 `None`）。
+
+返回 `{"action": "stop"}` 禁止本条表情，或 `{"action": "replace", "decision": {...}}` 指定/覆盖表情决策。
+
+#### `on_vision`
+
+payload：`image_url`、`is_meme`、`caption`、`data_uri`。
+
+返回 `{"action": "replace", "caption": "新的描述"}` 修改识图文本；返回 `{"action": "stop"}` 则清空描述、只用通用 `[图片]` / `[表情包]` 占位。
+
+#### `after_summary`
+
+payload：`user_id`、`state`、`favorability`、`importance`、`history`。用于同步用户画像、统计或外部存储。
+
+```python
 def setup(ctx):
-    ctx.on("on_reply", filter_sensitive_reply, priority=50, timeout=5.0)
+    ctx.on("on_message", filter_message, priority=50, timeout=5.0)
+    ctx.on("on_prompt", inject_prompt, priority=50, timeout=10.0)
+    ctx.on("on_reply", filter_reply, priority=50, timeout=5.0)
 ```
 
 ### 4.4 `PluginContext` 常用能力速查

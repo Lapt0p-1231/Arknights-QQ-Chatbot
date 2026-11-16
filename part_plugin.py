@@ -28,7 +28,11 @@ PLUGIN_DATA_DIR = os.path.join(DATA_DIR, "plugin_data")
 MAX_ZIP_BYTES = 4 * 1024 * 1024
 MAX_EXPANDED_BYTES = 12 * 1024 * 1024
 MAX_ZIP_FILES = 128
-SUPPORTED_HOOKS = {"on_message", "on_prompt", "on_reply", "after_reply"}
+SUPPORTED_HOOKS = {
+    "on_message", "on_prompt", "on_reply", "after_reply",
+    "on_proactive", "on_musing", "on_search", "on_sticker",
+    "on_vision", "after_summary",
+}
 _BACKEND_CACHE = {}
 _BACKEND_LOCK = None
 _current_manager = None
@@ -685,7 +689,7 @@ class PluginContext:
         if not callable(handler):
             raise TypeError("钩子 handler 必须可调用")
         self._record.hooks.setdefault(event, []).append(
-            HookSpec(event, handler, int(priority), max(0.5, min(30.0, float(timeout))))
+            HookSpec(event, handler, int(priority), max(0.5, min(120.0, float(timeout))))
         )
 
     async def reply(self, text: str, event: Optional[Dict[str, Any]] = None) -> None:
@@ -991,12 +995,265 @@ class PluginManager:
             _log(f"[插件] {record.plugin_id} 未知返回动作: {action}")
         return True
 
+    async def apply_proactive_hooks(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        await self.reload_if_changed()
+        for record, spec in list(self.hooks.get("on_proactive", [])):
+            ctx = PluginContext(self, record)
+            try:
+                result = await _invoke_handler(spec.handler, (dict(payload), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} on_proactive 异常，已跳过: {type(e).__name__}: {e}")
+                continue
+            if result is None:
+                continue
+            if isinstance(result, str):
+                result = {"action": "replace", "text": result}
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "replace")
+            if action == "continue":
+                continue
+            if action == "stop":
+                return {"action": "stop"}
+            text = str(result.get("text") or "").strip()
+            if not text:
+                continue
+            out = dict(result)
+            out["action"] = "replace"
+            out["text"] = text
+            return out
+        return None
+
+    @staticmethod
+    def _valid_messages(messages: Any) -> bool:
+        if not isinstance(messages, list) or not messages:
+            return False
+        for item in messages:
+            if not isinstance(item, dict) or not item.get("role") or "content" not in item:
+                return False
+        return True
+
+    async def apply_message_hooks(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        await self.reload_if_changed()
+        current = dict(payload)
+        changed = False
+        for record, spec in list(self.hooks.get("on_message", [])):
+            ctx = PluginContext(self, record)
+            try:
+                result = await _invoke_handler(spec.handler, (dict(current), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} on_message 异常，已跳过: {type(e).__name__}: {e}")
+                continue
+            if result is None:
+                continue
+            if isinstance(result, str):
+                result = {"action": "replace", "text": result}
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "replace")
+            if action == "continue":
+                continue
+            if action == "stop":
+                return {"action": "stop"}
+            text = result.get("text")
+            if action == "reply":
+                reply = str(text or "").strip()
+                if reply:
+                    return {"action": "reply", "text": reply}
+                continue
+            if text is not None:
+                current["text"] = str(text)
+                changed = True
+        if changed:
+            return {"action": "replace", "text": str(current.get("text") or "")}
+        return None
+
+    async def apply_prompt_hooks(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        await self.reload_if_changed()
+        messages = [dict(item) for item in (payload.get("messages") or [])]
+        current = dict(payload)
+        current["messages"] = messages
+        changed = False
+        for record, spec in list(self.hooks.get("on_prompt", [])):
+            ctx = PluginContext(self, record)
+            try:
+                result = await _invoke_handler(spec.handler, (dict(current), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} on_prompt 异常，已跳过: {type(e).__name__}: {e}")
+                continue
+            if result is None or not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "replace")
+            if action == "continue":
+                continue
+            if action == "stop":
+                return {"action": "stop"}
+            if result.get("system") is not None:
+                messages = [dict(item) for item in messages]
+                if messages and messages[0].get("role") == "system":
+                    messages[0]["content"] = str(result.get("system") or "")
+                else:
+                    messages.insert(0, {"role": "system", "content": str(result.get("system") or "")})
+                changed = True
+            if result.get("messages") is not None:
+                candidate = result.get("messages")
+                if self._valid_messages(candidate):
+                    messages = [dict(item) for item in candidate]
+                    changed = True
+            current["messages"] = messages
+        if changed:
+            return {"action": "replace", "messages": messages}
+        return None
+
+    async def apply_search_hooks(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        await self.reload_if_changed()
+        current = dict(payload)
+        context = payload.get("context")
+        changed = False
+        for record, spec in list(self.hooks.get("on_search", [])):
+            ctx = PluginContext(self, record)
+            try:
+                result = await _invoke_handler(spec.handler, (dict(current), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} on_search 异常，已跳过: {type(e).__name__}: {e}")
+                continue
+            if result is None:
+                continue
+            if isinstance(result, str):
+                result = {"action": "replace", "text": result}
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "replace")
+            if action == "continue":
+                continue
+            if action == "stop":
+                return {"action": "stop"}
+            if "context" in result or "text" in result:
+                context = result.get("context", result.get("text"))
+                current["context"] = context
+                changed = True
+        if changed:
+            return {"action": "replace", "context": context}
+        return None
+
+    async def apply_sticker_hooks(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        await self.reload_if_changed()
+        current = dict(payload)
+        decision = payload.get("decision")
+        changed = False
+        for record, spec in list(self.hooks.get("on_sticker", [])):
+            ctx = PluginContext(self, record)
+            try:
+                result = await _invoke_handler(spec.handler, (dict(current), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} on_sticker 异常，已跳过: {type(e).__name__}: {e}")
+                continue
+            if result is None or not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "replace")
+            if action == "continue":
+                continue
+            if action == "stop":
+                return {"action": "stop"}
+            if "decision" in result:
+                value = result.get("decision")
+                if value is None or isinstance(value, dict):
+                    decision = value
+                    current["decision"] = value
+                    changed = True
+        if changed:
+            return {"action": "replace", "decision": decision}
+        return None
+
+    async def apply_vision_hooks(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        await self.reload_if_changed()
+        current = dict(payload)
+        caption = str(payload.get("caption") or "")
+        changed = False
+        for record, spec in list(self.hooks.get("on_vision", [])):
+            ctx = PluginContext(self, record)
+            try:
+                result = await _invoke_handler(spec.handler, (dict(current), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} on_vision 异常，已跳过: {type(e).__name__}: {e}")
+                continue
+            if result is None:
+                continue
+            if isinstance(result, str):
+                result = {"action": "replace", "caption": result}
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "replace")
+            if action == "continue":
+                continue
+            if action == "stop":
+                return {"action": "stop"}
+            if "caption" in result or "text" in result:
+                caption = str(result.get("caption", result.get("text")) or "")
+                current["caption"] = caption
+                changed = True
+        if changed:
+            return {"action": "replace", "caption": caption}
+        return None
+
+    async def apply_musing_hooks(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        await self.reload_if_changed()
+        messages = [dict(item) for item in (payload.get("messages") or [])]
+        current = dict(payload)
+        current["messages"] = messages
+        text = ""
+        changed = False
+        for record, spec in list(self.hooks.get("on_musing", [])):
+            ctx = PluginContext(self, record)
+            try:
+                result = await _invoke_handler(spec.handler, (dict(current), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} on_musing 异常，已跳过: {type(e).__name__}: {e}")
+                continue
+            if result is None:
+                continue
+            if isinstance(result, str):
+                result = {"action": "replace", "text": result}
+            if not isinstance(result, dict):
+                continue
+            action = str(result.get("action") or "replace")
+            if action == "continue":
+                continue
+            if action == "stop":
+                return {"action": "stop"}
+            if result.get("text") is not None:
+                value = str(result.get("text") or "").strip()
+                if value:
+                    text = value
+                    changed = True
+            if result.get("messages") is not None:
+                candidate = result.get("messages")
+                if self._valid_messages(candidate):
+                    messages = [dict(item) for item in candidate]
+                    current["messages"] = messages
+                    changed = True
+        if text:
+            return {"action": "replace", "text": text}
+        if changed:
+            return {"action": "replace", "messages": messages}
+        return None
+
+    async def emit_hook(self, event: str, payload: Dict[str, Any]) -> None:
+        await self.reload_if_changed()
+        for record, spec in list(self.hooks.get(event, [])):
+            ctx = PluginContext(self, record)
+            try:
+                await _invoke_handler(spec.handler, (dict(payload), ctx), spec.timeout)
+            except Exception as e:
+                _log(f"[插件] {record.plugin_id} {event} 异常，已跳过: {type(e).__name__}: {e}")
+
     async def apply_reply_hooks(
         self,
         text: str,
         user_id: str,
         group_id: Optional[Any] = None,
         message: str = "",
+        kind: str = "chat",
     ) -> Optional[str]:
         await self.reload_if_changed()
         current = text
@@ -1006,6 +1263,7 @@ class PluginManager:
                 "user_id": str(user_id),
                 "group_id": str(group_id) if group_id is not None else None,
                 "message": message,
+                "kind": kind,
             }
             ctx = PluginContext(self, record)
             try:
