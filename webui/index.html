@@ -325,7 +325,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
     <div class="rail-foot">
       <div><span class="dot" :class="status.log_active?'on':'warn'"></span>{{ status.log_active ? 'SYSTEM ONLINE' : 'IDLE / NO SIGNAL' }}</div>
       <div>LINK 127.0.0.1:8090</div>
-      <div>BUILD 2026.11 // v1.5.1</div>
+      <div>BUILD 2026.11 // v1.5.2</div>
     </div>
   </aside>
 
@@ -444,8 +444,10 @@ input[type=range]{accent-color:var(--accent);width:100%}
               </div>
               <div class="divider"></div>
               <div class="row between">
-                <div><div class="label">Tavily API Key</div><div class="hint">LLM 搜索源（tavily.com 注册免费 1000 次/月；留空走 Jina/必应免 Key 链）</div></div>
-                <input type="text" v-model="settings.tavily_api_key" placeholder="tvly-...（留空禁用）" style="width:240px" @change="saveSettings({tavily_api_key:settings.tavily_api_key})">
+                 <div><div class="label">Tavily API Key</div><div class="hint">{{ settings.tavily_key_configured ? '已配置；密钥不会回显' : '未配置时走 Jina / 必应' }}</div></div>
+                 <div><input type="password" v-model="tavilyDraft" autocomplete="new-password" placeholder="输入新密钥" style="width:180px" @keydown.enter="saveTavily()">
+                 <button class="btn sm" @click="saveTavily()" :disabled="!tavilyDraft.trim()">保存</button>
+                 <button class="btn sm" v-if="settings.tavily_key_configured" @click="saveTavily(true)">清除</button></div>
               </div>
               <div class="divider"></div>
               <div class="hint" style="line-height:1.6">
@@ -719,20 +721,22 @@ input[type=range]{accent-color:var(--accent);width:100%}
             <div class="panel-b">
               <div class="row">
                 <input type="text" v-model="targetId" placeholder="QQ号 / group_群号 / group_群号_QQ号">
-                <button class="btn" @click="loadTarget">LOAD</button>
-              </div>
-              <div class="divider"></div>
+                 <button class="btn" :disabled="!targetKey || busy.target" @click="loadTarget">{{ busy.target ? '加载中…' : 'LOAD' }}</button>
+               </div>
+              <div class="hint" style="margin-top:6px">{{ targetReady ? '正在编辑：' + targetProfile.user_id : '请输入档案号并点击 LOAD 后再编辑' }}</div>
+              <fieldset :disabled="!targetReady" style="border:0;margin:0;padding:0;min-width:0">
+               <div class="divider"></div>
               <div class="row between">
                 <div><div class="label">Reply Mode / 回复模式</div><div class="hint">仅对本档案生效，群/私聊通用</div></div>
-                <select :value="profile.mode || ''" style="width:120px" @change="setTargetMode($event.target.value)">
+                 <select :value="targetProfile?.mode || ''" style="width:120px" @change="setTargetMode($event.target.value)">
                   <option value="">跟随全局</option>
                   <option value="扮演">扮演</option>
                   <option value="聊天">聊天</option>
                 </select>
               </div>
-              <div class="row between" v-if="targetId.trim().startsWith('group_')">
+               <div class="row between" v-if="targetKey.startsWith('group_')">
                 <div><div class="label">Trigger / 触发方式</div><div class="hint">仅群聊生效</div></div>
-                <select :value="profile.at_only === true ? 'at' : (profile.at_only === false ? 'auto' : '')" style="width:120px" @change="setTargetAtOnly($event.target.value)">
+                 <select :value="targetProfile?.at_only === true ? 'at' : (targetProfile?.at_only === false ? 'auto' : '')" style="width:120px" @change="setTargetAtOnly($event.target.value)">
                   <option value="">跟随全局</option>
                   <option value="at">仅提及</option>
                   <option value="auto">自主互动</option>
@@ -763,9 +767,10 @@ input[type=range]{accent-color:var(--accent);width:100%}
               <div class="divider"></div>
               <div class="row wrap">
                 <button class="btn danger" @click="clearMemory(false)">清空个人记忆</button>
-                <button class="btn danger" @click="clearMemory(true)">清空群共享记忆</button>
-                <span class="hint" style="margin-left:auto">不可撤销</span>
-              </div>
+                 <button class="btn danger" :disabled="!/^group_\d+(?:_\d+)?$/.test(targetKey)" @click="clearMemory(true)">清空群共享记忆</button>
+                 <span class="hint" style="margin-left:auto">不可撤销</span>
+               </div>
+              </fieldset>
             </div>
           </section>
 
@@ -1574,9 +1579,12 @@ createApp({
       musingSel: [], musingSearch: '', musingType: '', bulkInterval: null,
       archives: [], archiveSel: [], archiveSearch: '', archiveType: '',
       helpText: '',
-      newKeyword: '',
+       newKeyword: '',
+       tavilyDraft: '',
+       settingsQueue: Promise.resolve(),
       newBotQQ: '',
-      targetId: '', favorValue: 0, charText: '', personaText: '',
+       targetId: '', favorValue: 0, charText: '', personaText: '',
+      targetProfile: null, targetLoadVersion: 0,
       profile: {}, hot: [], vectors: [],
       scope: '', searchQuery: '', searchScopes: '', results: [],
       embedText: '', embedInfo: null,
@@ -1602,6 +1610,8 @@ createApp({
     };
   },
   computed: {
+    targetKey(){ return this.targetId.trim(); },
+    targetReady(){ return !this.busy.target && this.targetProfile?.user_id === this.targetKey; },
     currentTab(){ return this.tabs.find(t=>t.id===this.tab) || this.tabs[0]; },
     pluginFrameSrc(){
       if(!this.activePlugin || !this.activePlugin.panel) return '';
@@ -1645,6 +1655,12 @@ createApp({
         const c = this.logClass(l);
         return this.logFilterSet.includes(c);
       });
+    }
+  },
+  watch: {
+    targetKey: {
+      flush: 'sync',
+      handler(){ this.resetTargetEditor(); }
     }
   },
   mounted() {
@@ -1742,22 +1758,33 @@ createApp({
         await this.api('/api/proactive/poke',{method:'POST',body:{target_type: kind || null}});
       }, '已提交冒泡测试，机器人将在数秒内触发（结果见日志 [主动]）');
     },
-    async saveSettings(patch){
-      // 乐观更新：点击瞬间先切换本地状态，让 UI 立刻响应动画，不用等服务器返回
-      Object.assign(this.settings, patch);
-      await this.guard(async()=>{
-        const res = await this.api('/api/settings',{method:'POST',body:patch});
-        const mismatch = Object.keys(patch).filter(k => typeof patch[k] !== 'object' && res[k] !== patch[k]);
-        this.settings = Object.assign({}, this.settings, res);
-        if (mismatch.length) {
-          // 后端没保存成功（通常是 WebUI 还在跑旧进程）：保留本地值，别把控件弹回去，并明确提示
-          for (const k of mismatch) this.settings[k] = patch[k];
-          console.warn(`[设置同步警告] 后端未保存: ${mismatch.join(', ')}，可能 WebUI 进程未重启`);
-          this.toast('ERROR', '部分设置未生效：WebUI 进程可能还是旧版本，请重启 WebUI', true);
-          return;
-        }
-      }, '设置已保存');
-    },
+     async saveSettings(patch){
+       const write = async()=>{
+         try {
+           const res = await this.api('/api/settings',{method:'POST',body:patch});
+           const keys = Object.keys(patch).filter(k => k !== 'tavily_api_key');
+           if (keys.some(k => !(k in res))) throw new Error('服务未返回已保存字段，请检查 WebUI 版本');
+           for (const k of keys) this.settings[k] = res[k];
+           this.settings.tavily_key_configured = res.tavily_key_configured;
+           this.toast('OK', '设置已保存');
+           return true;
+         } catch(e) {
+           await this.loadSettings();
+           this.toast('ERROR', e.message, true);
+           return false;
+         }
+       };
+       this.settingsQueue = this.settingsQueue.then(write, write);
+       return this.settingsQueue;
+     },
+     async saveTavily(clear=false){
+       if(clear && !confirm('清除 Tavily 密钥？')) return;
+       const value = this.tavilyDraft.trim();
+       if (!clear && !value) return;
+       if(await this.saveSettings({tavily_api_key:clear ? '' : value})){
+         this.tavilyDraft = '';
+       }
+     },
     async toggleAtOnly(){
       await this.guard(async()=>{ this.settings = await this.api('/api/settings',{method:'POST',body:{at_only:!this.settings.at_only}}); },
         '已切换为 ' + (!this.settings.at_only ? '仅提及触发':'自主互动'));
@@ -1938,58 +1965,88 @@ createApp({
     typeLabel(t){ return t==='private' ? '私聊' : (t==='group' ? '群聊' : (t==='member' ? '群友' : t)); },
 
     /* ---- target ops ---- */
+    resetTargetEditor(){
+      this.targetLoadVersion++;
+      this.targetProfile = null;
+      this.busy.target = false;
+      this.favorValue = 0;
+      this.charText = '';
+      this.personaText = '';
+    },
     async loadTarget(){
-      if(!this.targetId.trim()) return this.toast('WARN','请先填写档案名',true);
+      const uid = this.targetKey;
+      if(!uid) return this.toast('WARN','请先填写档案名',true);
+      this.resetTargetEditor();
+      const version = this.targetLoadVersion;
+      this.busy.target = true;
+      try {
+        const loaded = await this.api('/api/profile?user_id='+encodeURIComponent(uid));
+        if(version !== this.targetLoadVersion) return;
+        if(loaded?.user_id !== uid) throw new Error('返回的档案号与请求不符，请重新 LOAD');
+        this.targetProfile = loaded;
+        this.favorValue = loaded.favorability ?? 0;
+        this.charText = loaded.character_prompt || '';
+        this.personaText = loaded.user_persona || '';
+        this.toast('LOADED', '档案 ' + uid);
+      } catch(e) {
+        if(version === this.targetLoadVersion) this.toast('ERROR', e.message, true);
+      } finally {
+        if(version === this.targetLoadVersion) this.busy.target = false;
+      }
+    },
+    async writeTarget(path, fields, message, onSaved){
+      if(!this.targetReady) return this.toast('WARN','请先 LOAD 当前档案',true);
+      const loaded = this.targetProfile;
       await this.guard(async()=>{
-        this.profile = await this.api('/api/profile?user_id='+encodeURIComponent(this.targetId.trim()));
-        this.favorValue = this.profile.favorability ?? 0;
-        this.charText = this.profile.character_prompt || '';
-        this.personaText = this.profile.user_persona || '';
-        this.toast('LOADED', '档案 ' + this.targetId);
-      });
+        const result = await this.api(path,{method:'POST',body:{...fields,user_id:loaded.user_id}});
+        if(this.targetReady && this.targetProfile === loaded) onSaved?.(result);
+      }, loaded.user_id + '：' + message);
     },
     async setFavor(){
-      await this.guard(async()=>{
-        const r = await this.api('/api/favor',{method:'POST',body:{user_id:this.targetId.trim(),value:this.favorValue}});
-        this.profile.favorability = r.favorability;
-      }, '好感度已更新');
+      await this.writeTarget('/api/favor',{value:this.favorValue},'好感度已更新', r=>{
+        this.targetProfile.favorability = r.favorability;
+      });
     },
     async setTargetMode(mode){
-      if(!this.targetId.trim()) return this.toast('WARN','请先 LOAD 档案',true);
-      await this.guard(async()=>{
-        const r = await this.api('/api/target/mode',{method:'POST',body:{user_id:this.targetId.trim(), mode: mode || null}});
-        this.profile.mode = r.mode;
-      }, '回复模式：' + (mode || '跟随全局'));
+      await this.writeTarget('/api/target/mode',{mode:mode || null},'回复模式：' + (mode || '跟随全局'), r=>{
+        this.targetProfile.mode = r.mode;
+      });
     },
     async setTargetAtOnly(val){
-      if(!this.targetId.trim()) return this.toast('WARN','请先 LOAD 档案',true);
       const v = val === 'at' ? true : (val === 'auto' ? false : null);
-      await this.guard(async()=>{
-        const r = await this.api('/api/target/at_only',{method:'POST',body:{user_id:this.targetId.trim(), at_only:v}});
-        this.profile.at_only = r.at_only;
-      }, '触发方式：' + (v === null ? '跟随全局' : (v ? '仅提及' : '自主互动')));
+      await this.writeTarget('/api/target/at_only',{at_only:v},
+        '触发方式：' + (v === null ? '跟随全局' : (v ? '仅提及' : '自主互动')), r=>{
+          this.targetProfile.at_only = r.at_only;
+        });
     },
     async saveChar(){
-      await this.guard(()=>this.api('/api/target/character',{method:'POST',body:{user_id:this.targetId.trim(),text:this.charText}}), '专属人格已保存');
+      await this.writeTarget('/api/target/character',{text:this.charText},'专属人格已保存');
     },
     async clearChar(){
-      await this.guard(()=>this.api('/api/target/character/clear',{method:'POST',body:{user_id:this.targetId.trim()}}), '专属人格已清除');
-      this.charText='';
+      await this.writeTarget('/api/target/character/clear',{},'专属人格已清除',()=>{ this.charText=''; });
     },
     async savePersona(){
-      await this.guard(()=>this.api('/api/target/persona',{method:'POST',body:{user_id:this.targetId.trim(),text:this.personaText}}), '用户档案已保存');
+      await this.writeTarget('/api/target/persona',{text:this.personaText},'用户档案已保存');
     },
     async clearPersona(){
-      await this.guard(()=>this.api('/api/target/persona/clear',{method:'POST',body:{user_id:this.targetId.trim()}}), '用户档案已清除');
-      this.personaText='';
+      await this.writeTarget('/api/target/persona/clear',{},'用户档案已清除',()=>{ this.personaText=''; });
     },
     async clearMemory(withGroup){
-      const uid = this.targetId.trim();
-      if(!uid) return this.toast('WARN','请先填写档案名',true);
-      const groupId = withGroup ? uid.replace(/^group_/,'').split('_')[0] : null;
-      if(!confirm(`确认清空 ${uid} 的记忆？此操作不可撤销。`)) return;
-      await this.guard(()=>this.api('/api/memory/clear',{method:'POST',body:{user_id:uid, group_id:groupId}}), '记忆已清空');
-      this.hot=[]; this.vectors=[];
+      if(!this.targetReady) return this.toast('WARN','请先 LOAD 当前档案',true);
+      const uid = this.targetProfile.user_id;
+      const groupScope = withGroup ? uid.match(/^group_\d+(?=_\d+$|$)/)?.[0] : null;
+      if(withGroup && !groupScope) return this.toast('WARN','请先 LOAD 群聊或群成员档案',true);
+      const extra = groupScope && groupScope !== uid ? ` 和群共享档案 ${groupScope}` : '';
+      if(!confirm(`确认清空 ${uid}${extra} 的记忆？此操作不可撤销。`)) return;
+      await this.writeTarget('/api/memory/clear',{group_id:extra ? groupScope.slice(6) : null},'记忆已清空',()=>{
+        this.targetProfile.state = {};
+        this.targetProfile.favorability = null;
+        this.favorValue = 0;
+        if(this.profile.user_id === uid || (groupScope && this.profile.user_id === groupScope)){
+          this.hot=[]; this.vectors=[];
+          this.profile = {...this.profile, state:{}, favorability:null};
+        }
+      });
     },
 
     /* ---- memory ---- */

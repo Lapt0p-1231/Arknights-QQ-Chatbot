@@ -7,7 +7,9 @@
 import json
 import os
 import re
-import time
+import threading
+import uuid
+from functools import wraps
 from urllib.parse import urlparse
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +38,15 @@ DEFAULT_CONFIG = {
 }
 
 _cache = {"mtime": None, "data": None}
+_write_lock = threading.Lock()
+
+
+def _edit_config(fn):
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _write_lock:
+            return fn(*args, **kwargs)
+    return locked
 
 
 def _normalize(data):
@@ -89,12 +100,16 @@ def load_config():
 
 def save_config(data):
     data = _normalize(data)
-    tmp = CONFIG_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, CONFIG_FILE)
+    tmp = f"{CONFIG_FILE}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     _cache["mtime"] = None
     _cache["data"] = None
 
@@ -124,6 +139,7 @@ def get_route(role):
     return {}
 
 
+@_edit_config
 def set_route(role, pid):
     if role not in ROLES:
         raise ValueError("role 只能是 main / sub / sticker_tag")
@@ -156,6 +172,7 @@ def _normalize_url(url):
     return url
 
 
+@_edit_config
 def upsert_profile(pid, name, url, key, model):
     """pid 为空=新建；key 为空且是编辑=保留旧 key。返回 profile id。"""
     url = _normalize_url(url)
@@ -186,6 +203,7 @@ def upsert_profile(pid, name, url, key, model):
     return pid
 
 
+@_edit_config
 def delete_profile(pid):
     cfg = load_config()
     cfg["profiles"] = [p for p in cfg["profiles"] if p["id"] != pid]

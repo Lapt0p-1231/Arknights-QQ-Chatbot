@@ -5,6 +5,9 @@
 """
 import asyncio
 import base64
+import hashlib
+import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -12,8 +15,12 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
+import uuid
 import zlib
+from functools import wraps
+from urllib.parse import urlsplit
 
 import aiohttp
 import uvicorn
@@ -26,17 +33,92 @@ import part_prompt
 import part_record
 import part_api
 import part_plugin
+from part_runtime import qq_id, token_matches
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(BASE_DIR, "QQ-BOT.log")
+LOG_FILE = os.environ.get("QQ_BOT_LOG_FILE", os.path.join(BASE_DIR, "QQ-BOT.log"))
 WEBUI_DIR = os.path.join(BASE_DIR, "webui")
 INDEX_FILE = os.path.join(WEBUI_DIR, "index.html")
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = part_record.DATA_DIR
 PROACTIVE_REQ_FILE = os.path.join(DATA_DIR, "proactive_request.json")
 
 app = FastAPI(title="QQ-BOT WebUI", docs_url=None, redoc_url=None)
 
+
+def _trusted_web_request(conn):
+    host = (urlsplit(f"//{conn.headers.get('host', '')}").hostname or "").lower()
+    configured_host = os.environ.get("QQ_BOT_WEB_HOST", "127.0.0.1").lower()
+    extra_hosts = {h.strip().lower() for h in os.environ.get("QQ_BOT_WEB_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    allowed = {"localhost", "127.0.0.1", "::1", *extra_hosts}
+    if configured_host not in ("0.0.0.0", "::"):
+        allowed.add(configured_host)
+    if host not in allowed:
+        return False
+    origin = conn.headers.get("origin")
+    if origin:
+        parsed = urlsplit(origin)
+        if parsed.scheme not in ("http", "https") or parsed.netloc.lower() != conn.headers.get("host", "").lower():
+            return False
+    return True
+
+
+def _web_authorized(conn):
+    token = os.environ.get("QQ_BOT_WEB_TOKEN", "")
+    if token:
+        authorization = conn.headers.get("Authorization", "")
+        if authorization.startswith("Basic "):
+            try:
+                user, secret = base64.b64decode(authorization[6:], validate=True).decode().split(":", 1)
+                return user == "admin" and token_matches(token, secret)
+            except (ValueError, UnicodeError):
+                pass
+        cookie = conn.cookies.get("ark_web_session", "")
+        return token_matches(_web_session(token), cookie)
+    try:
+        return ipaddress.ip_address(conn.client.host).is_loopback
+    except (ValueError, AttributeError):
+        return False
+
+
+def _web_session(token):
+    return hmac.new(token.encode(), b"Arknights QQ Chatbot WebUI session v1", hashlib.sha256).hexdigest()
+
+
+@app.middleware("http")
+async def protect_webui(request: Request, call_next):
+    try:
+        trusted = _trusted_web_request(request)
+    except ValueError:
+        trusted = False
+    if not trusted:
+        return Response(status_code=403)
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("sec-fetch-site") in ("cross-site", "same-site"):
+        return Response(status_code=403)
+    if not _web_authorized(request):
+        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Arknights QQ Chatbot", charset="UTF-8"'})
+    response = await call_next(request)
+    token = os.environ.get("QQ_BOT_WEB_TOKEN", "")
+    if token and request.url.path == "/" and response.status_code == 200:
+        response.set_cookie("ark_web_session", _web_session(token), httponly=True,
+                            secure=request.url.scheme == "https", samesite="strict")
+    return response
+
+
+def _public_settings(settings):
+    secret = bool(settings.get("tavily_api_key"))
+    return {**settings, "tavily_api_key": "", "tavily_key_configured": secret}
+
 _http_session = None
+_prompt_write_lock = threading.Lock()
+
+
+def _prompt_write(fn):
+    """Prompt mutations are read-modify-write; the WebUI is their only programmatic writer."""
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with _prompt_write_lock:
+            return fn(*args, **kwargs)
+    return locked
 
 
 def _get_http_session():
@@ -293,7 +375,7 @@ def status():
     db_file = part_record.DB_FILE
     return {
         "ok": True,
-        "settings": settings,
+        "settings": _public_settings(settings),
         "log_active": (time.time() - log_mtime) < 300,
         "log_mtime": log_mtime,
         "db_size": os.path.getsize(db_file) if os.path.isfile(db_file) else 0,
@@ -301,12 +383,12 @@ def status():
         "enabled_prompt_count": sum(
             1 for x in part_prompt.get_prompt_files() if x.get("enabled")
         ),
-        "bot_qq": settings.get("bot_qq") or int(os.environ.get("QQ_BOT_QQ", "0") or 0),
+        "bot_qq": qq_id(os.environ.get("QQ_BOT_QQ", "").strip()) or qq_id(settings.get("bot_qq")) or 0,
     }
 
 
 # ====== 机器人进程控制（关机/重启）======
-BOT_PID_FILE = os.path.join(BASE_DIR, "data", "bot.pid")
+BOT_PID_FILE = os.path.join(DATA_DIR, "bot.pid")
 BOT_SCRIPT = os.path.join(BASE_DIR, "QQ-BOT.py")
 
 
@@ -391,7 +473,9 @@ def bot_restart():
         pid = _read_bot_pid()
         if pid and _pid_alive(pid):
             try:
-                with socket.create_connection(("127.0.0.1", 8080), timeout=0.5):
+                host = os.environ.get("QQ_BOT_WS_HOST", "0.0.0.0")
+                probe_host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+                with socket.create_connection((probe_host, int(os.environ.get("QQ_BOT_WS_PORT", "8080"))), timeout=0.5):
                     return {"ok": True, "pid": pid}
             except OSError:
                 continue
@@ -447,9 +531,13 @@ def plugin_reload():
 
 @app.post("/api/plugins/install")
 async def plugin_install(request: Request, filename: str = "", name: str = ""):
-    data = await request.body()
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > part_plugin.MAX_ZIP_BYTES:
+            raise HTTPException(413, "ZIP 超过 4 MiB")
+        data.extend(chunk)
     try:
-        result = part_plugin.install_plugin_zip(data, filename=filename, name=name)
+        result = await asyncio.to_thread(part_plugin.install_plugin_zip, bytes(data), filename, name)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True, **result}
@@ -526,8 +614,12 @@ def _plugin_file_response(path):
                 text = text[:index] + tag + text[index:]
             else:
                 text = tag + text
-        return Response(content=text, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
-    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
+        return Response(content=text, media_type="text/html; charset=utf-8",
+                        headers={"Cache-Control": "no-store", "Content-Security-Policy": "sandbox allow-scripts"})
+    headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+    if suffix == ".svg":
+        headers["Content-Security-Policy"] = "sandbox"
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @app.get("/plugin-assets/{plugin_id}/{asset_path:path}")
@@ -547,7 +639,7 @@ def plugin_asset(plugin_id: str, asset_path: str):
 
 @app.get("/api/settings")
 def get_settings():
-    return part_record.load_settings()
+    return _public_settings(part_record.load_settings())
 
 
 @app.post("/api/settings")
@@ -716,8 +808,7 @@ def update_settings(body: SettingsUpdate):
         if not 0 <= val <= 100:
             raise HTTPException(400, "主动类型比例范围 0-100")
         cur["proactive_type_a_ratio"] = val
-    part_record.save_settings(cur)
-    return cur
+    return _public_settings(part_record.patch_settings({key: cur[key] for key in data if key in cur}))
 
 
 @app.get("/api/stickers/stats")
@@ -830,12 +921,10 @@ def set_musing_config(body: MusingConfig):
     min_imp = float(body.min_importance)
     if not 0 <= min_imp <= 1:
         raise HTTPException(400, "IMP 阈值范围 0-1")
-    settings = part_record.load_settings()
-    settings["musing_interval_minutes"] = interval
-    settings["musing_private_enabled"] = bool(body.private_enabled)
-    settings["musing_group_enabled"] = bool(body.group_enabled)
-    settings["musing_min_importance"] = min_imp
-    part_record.save_settings(settings)
+    part_record.patch_settings({
+        "musing_interval_minutes": interval, "musing_private_enabled": body.private_enabled,
+        "musing_group_enabled": body.group_enabled, "musing_min_importance": min_imp,
+    })
     return _musing_payload()
 
 
@@ -855,23 +944,19 @@ def set_musing_target(body: MusingTargetUpdate):
             raise HTTPException(400, "发散间隔范围 0-360 分钟")
         override["interval_minutes"] = interval
 
-    settings = part_record.load_settings()
-    overrides = dict(settings.get("musing_overrides") or {})
-    current = dict(overrides.get(scope) or {})
-    current.update(override)
-    overrides[scope] = current
-    settings["musing_overrides"] = overrides
-    part_record.save_settings(settings)
+    def change(settings):
+        overrides = settings.setdefault("musing_overrides", {}) or {}
+        overrides[scope] = {**(overrides.get(scope) or {}), **override}
+        settings["musing_overrides"] = overrides
+    part_record.mutate_settings(change)
     return _musing_payload()
 
 
 @app.post("/api/musing/target/reset")
 def reset_musing_target(body: MusingTargetReset):
-    settings = part_record.load_settings()
-    overrides = dict(settings.get("musing_overrides") or {})
-    overrides.pop(body.scope.strip(), None)
-    settings["musing_overrides"] = overrides
-    part_record.save_settings(settings)
+    def change(settings):
+        (settings.get("musing_overrides") or {}).pop(body.scope.strip(), None)
+    part_record.mutate_settings(change)
     return _musing_payload()
 
 
@@ -885,20 +970,20 @@ def set_musing_batch(body: MusingBatch):
     if body.interval_minutes is not None and not 0 <= float(body.interval_minutes) <= 360:
         raise HTTPException(400, "发散间隔范围 0-360 分钟")
 
-    settings = part_record.load_settings()
-    overrides = dict(settings.get("musing_overrides") or {})
-    for scope in scopes:
-        if body.reset:
-            overrides.pop(scope, None)
-            continue
-        current = dict(overrides.get(scope) or {})
-        if body.enabled is not None:
-            current["enabled"] = bool(body.enabled)
-        if body.interval_minutes is not None:
-            current["interval_minutes"] = float(body.interval_minutes)
-        overrides[scope] = current
-    settings["musing_overrides"] = overrides
-    part_record.save_settings(settings)
+    def change(settings):
+        overrides = dict(settings.get("musing_overrides") or {})
+        for scope in scopes:
+            if body.reset:
+                overrides.pop(scope, None)
+                continue
+            current = dict(overrides.get(scope) or {})
+            if body.enabled is not None:
+                current["enabled"] = body.enabled
+            if body.interval_minutes is not None:
+                current["interval_minutes"] = body.interval_minutes
+            overrides[scope] = current
+        settings["musing_overrides"] = overrides
+    part_record.mutate_settings(change)
     return _musing_payload()
 
 
@@ -915,12 +1000,16 @@ def profile(user_id: str):
         "state": memory.get("state", {}),
         "character_prompt": memory.get("character_prompt", ""),
         "user_persona": memory.get("user_persona", ""),
+        "display_name": memory.get("display_name", ""),
+        "display_aliases": memory.get("display_aliases", []),
         "chat_history": memory.get("chat_history", []),
     }
 
 
 @app.post("/api/favor")
 def set_favor(body: FavorUpdate):
+    if not -100 <= body.value <= 100:
+        raise HTTPException(400, "好感度范围 -100 到 100")
     return {"favorability": part_record.set_favorability(body.user_id, body.value)}
 
 
@@ -1057,11 +1146,15 @@ def prompt_content(file: str):
 
 
 @app.post("/api/prompts/toggle")
+@_prompt_write
 def prompt_toggle(body: PromptToggle):
     files = part_prompt.get_prompt_files()
     for item in files:
         if item["file"] == body.file:
-            item["enabled"] = body.enabled
+            if item.get("character") and body.enabled:
+                part_prompt.select_character(files, body.file)
+            else:
+                item["enabled"] = body.enabled
             break
     else:
         raise HTTPException(404, "没有这个提示词文件")
@@ -1070,17 +1163,25 @@ def prompt_toggle(body: PromptToggle):
 
 
 @app.post("/api/prompts/save")
+@_prompt_write
 def prompt_save(body: PromptSave):
     name = _safe_prompt_name(body.file)
     path = os.path.join(part_prompt.PROMPT_DIR, name)
     if not os.path.isfile(path):
         raise HTTPException(404, "文件不存在，请用新建")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(body.content)
+    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(body.content)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return {"ok": True}
 
 
 @app.post("/api/prompts/create")
+@_prompt_write
 def prompt_create(body: PromptCreate):
     name = _safe_prompt_name(body.file)
     path = os.path.join(part_prompt.PROMPT_DIR, name)
@@ -1094,11 +1195,14 @@ def prompt_create(body: PromptCreate):
         if getattr(body, flag):
             entry[flag] = True
     files.append(entry)
+    if body.character and body.enabled:
+        part_prompt.select_character(files, name)
     _save_prompt_list(files)
     return {"ok": True, "items": _prompt_items()}
 
 
 @app.post("/api/prompts/delete")
+@_prompt_write
 def prompt_delete(body: PromptFile):
     name = _safe_prompt_name(body.file)
     path = os.path.join(part_prompt.PROMPT_DIR, name)
@@ -1110,18 +1214,20 @@ def prompt_delete(body: PromptFile):
 
 
 @app.post("/api/prompts/character")
+@_prompt_write
 def prompt_character(body: PromptFile):
     name = _safe_prompt_name(body.file)
     files = part_prompt.get_prompt_files()
-    for item in files:
-        item["character"] = item["file"] == name
-        if item["file"] == name:
-            item["enabled"] = True
+    try:
+        part_prompt.select_character(files, name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     _save_prompt_list(files)
     return {"ok": True, "items": _prompt_items()}
 
 
 @app.post("/api/prompts/reorder")
+@_prompt_write
 def prompt_reorder(body: PromptReorder):
     files = part_prompt.get_prompt_files()
     by_name = {item["file"]: item for item in files}
@@ -1306,6 +1412,13 @@ def logs_tail(lines: int = 200):
 
 @app.websocket("/ws/logs")
 async def ws_logs(websocket: WebSocket):
+    try:
+        trusted = _trusted_web_request(websocket)
+    except ValueError:
+        trusted = False
+    if not trusted or not _web_authorized(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     try:
         offset = 0
@@ -1361,6 +1474,8 @@ async def ws_logs(websocket: WebSocket):
 
 if __name__ == "__main__":
     host = os.environ.get("QQ_BOT_WEB_HOST", "127.0.0.1")
+    if host not in ("127.0.0.1", "::1", "localhost") and not os.environ.get("QQ_BOT_WEB_TOKEN"):
+        raise SystemExit("非回环 WebUI 必须配置 QQ_BOT_WEB_TOKEN；请在 HTTPS 反代后访问。")
     port = int(os.environ.get("QQ_BOT_WEB_PORT", "8090"))
     print(f"QQ-BOT WebUI: http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="warning")

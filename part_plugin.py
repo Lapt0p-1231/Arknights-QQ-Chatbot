@@ -4,17 +4,17 @@ import importlib.util
 import inspect
 import io
 import json
-import mimetypes
+import ntpath
 import os
 import re
 import shutil
 import sys
-import tempfile
+import threading
 import time
 import uuid
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 PLUGIN_API_VERSION = 1
@@ -34,7 +34,7 @@ SUPPORTED_HOOKS = {
     "on_vision", "after_summary",
 }
 _BACKEND_CACHE = {}
-_BACKEND_LOCK = None
+_BACKEND_LOCK = threading.Lock()
 _current_manager = None
 
 _logger: Optional[Callable[[str], None]] = None
@@ -103,6 +103,8 @@ def _iter_manifests(plugin_dir: str = PLUGIN_DIR):
     if not os.path.isdir(plugin_dir):
         return
     for folder in sorted(os.listdir(plugin_dir)):
+        if folder.startswith("."):
+            continue  # ZIP staging directories must never be discovered as installed plugins.
         root = os.path.join(plugin_dir, folder)
         manifest_path = os.path.join(root, "manifest.json")
         if not os.path.isdir(root) or not os.path.isfile(manifest_path):
@@ -180,12 +182,21 @@ def inspect_plugins(plugin_dir: str = PLUGIN_DIR) -> List[Dict[str, Any]]:
 
 
 def _safe_relative(value: Any) -> Optional[PurePosixPath]:
-    if not isinstance(value, str) or not value or "\\" in value:
+    if not isinstance(value, str) or not value or "\\" in value or ":" in value:
         return None
     rel = PurePosixPath(value)
-    if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
+    if (rel.is_absolute() or PureWindowsPath(value).anchor or not rel.parts
+            or any(part in ("", ".", "..") or part.endswith((" ", "."))
+                   or _reserved_path(part)
+                   or re.search(r'[\x00-\x1f<>|?*"]', part) for part in value.split("/"))):
         return None
     return rel
+
+
+def _reserved_path(part):
+    if hasattr(ntpath, "isreserved"):
+        return ntpath.isreserved(part)
+    return PureWindowsPath(part).is_reserved()
 
 
 def _panel_file(root: Path, manifest: Dict[str, Any]) -> str:
@@ -321,9 +332,10 @@ def _zip_entries(data: bytes):
         rel = _safe_relative(name)
         if rel is None:
             raise ValueError("ZIP 包含非法路径")
-        if str(rel) in seen:
+        key = str(rel).casefold()
+        if key in seen:
             raise ValueError("ZIP 包含重复文件路径")
-        seen.add(str(rel))
+        seen.add(key)
         if info.flag_bits & 0x1:
             raise ValueError("不支持加密 ZIP")
         mode = (info.external_attr >> 16) & 0o170000
@@ -366,6 +378,9 @@ def install_plugin_zip(data: bytes, filename: str = "", name: str = "") -> Dict[
         selected.append((rel, info))
     if not selected:
         raise ValueError("ZIP 中没有可安装文件")
+    # 安装根路径可能在剥离包目录后发生变化，按最终相对路径再校验一次。
+    if any(_safe_relative(rel) is None for rel, _ in selected):
+        raise ValueError("ZIP 包含非法安装路径")
     raw_manifest = None
     for target in ("manifest.json", "plugin.json"):
         if target in {rel for rel, _ in selected}:
@@ -393,7 +408,9 @@ def install_plugin_zip(data: bytes, filename: str = "", name: str = "") -> Dict[
     temp_dir.mkdir(parents=True, exist_ok=False)
     try:
         for rel, info in selected:
-            path = temp_dir / Path(*PurePosixPath(rel).parts)
+            path = (temp_dir / Path(*PurePosixPath(rel).parts)).resolve()
+            if not path.is_relative_to(temp_dir.resolve()):
+                raise ValueError("ZIP 文件超出插件安装目录")
             path.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info) as src, open(path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
@@ -419,6 +436,9 @@ def install_plugin_zip(data: bytes, filename: str = "", name: str = "") -> Dict[
         )
         if not (temp_dir / "plugin.py").is_file() and not (temp_dir / "index.html").is_file() and not has_theme_style:
             raise ValueError("插件至少需要 plugin.py、index.html 或主题 stylesheet")
+        # 清单本身也必须默认禁用，避免目录发布到写 override 的间隙自动加载。
+        package_manifest["enabled"] = False
+        manifest_path.write_text(json.dumps(package_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp_dir, target_dir)
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -496,6 +516,17 @@ def delete_plugin(plugin_id: str) -> None:
 
 
 def _load_backend(plugin_id: str):
+    with _BACKEND_LOCK:
+        return _load_backend_locked(plugin_id)
+
+
+def _forget_modules(prefix):
+    for name in tuple(sys.modules):
+        if name == prefix or name.startswith(prefix + "."):
+            sys.modules.pop(name, None)
+
+
+def _load_backend_locked(plugin_id: str):
     info = plugin_panel(plugin_id)
     if not info:
         return None
@@ -503,17 +534,12 @@ def _load_backend(plugin_id: str):
     if not path.is_file():
         return None
     try:
-        mtime = path.stat().st_mtime_ns
+        revision = _plugin_revision(info["root"], info["manifest"], info["panel"])
     except OSError:
         return None
     cached = _BACKEND_CACHE.get(plugin_id)
-    if cached and cached[0] == mtime:
+    if cached and cached[0] == revision:
         return cached[1]
-    if cached and cached[1]:
-        old_mod = cached[1]
-        for mod_k, mod_v in list(sys.modules.items()):
-            if mod_v is old_mod:
-                sys.modules.pop(mod_k, None)
     module_name = f"_arkbot_panel_{plugin_id}_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(
         module_name, str(path), submodule_search_locations=[str(path.parent)]
@@ -522,8 +548,14 @@ def _load_backend(plugin_id: str):
         raise ImportError("无法加载插件后端")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    _BACKEND_CACHE[plugin_id] = (mtime, module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        _forget_modules(module_name)
+        raise
+    if cached:
+        _forget_modules(cached[1].__name__)
+    _BACKEND_CACHE[plugin_id] = (revision, module)
     return module
 
 
@@ -533,10 +565,12 @@ async def call_plugin_backend(plugin_id: str, method: str, data: Any) -> Any:
     module = await asyncio.to_thread(_load_backend, plugin_id)
     if module is None:
         return None
+    config = dict(plugin_panel(plugin_id).get("manifest", {}).get("config") or {})
+    config.update(_load_overrides().get(plugin_id, {}).get("config") or {})
     ctx = {
         "id": plugin_id,
         "data_dir": os.path.join(PLUGIN_DATA_DIR, plugin_id),
-        "config": plugin_panel(plugin_id).get("manifest", {}).get("config", {}),
+        "config": config,
     }
     os.makedirs(ctx["data_dir"], exist_ok=True)
     handler = getattr(module, "handle", None)
@@ -780,8 +814,8 @@ class PluginManager:
                     await _invoke_handler(teardown, (ctx,), 5.0)
                 except Exception as e:
                     _log(f"[插件] {record.plugin_id} teardown 异常: {e}")
-            if record.module_name and record.module_name in sys.modules:
-                sys.modules.pop(record.module_name, None)
+            if record.module_name:
+                _forget_modules(record.module_name)
             record.module = None
             record.module_name = ""
         record.loaded = False
@@ -862,8 +896,7 @@ class PluginManager:
         except Exception as e:
             record.loaded = False
             record.error = f"{type(e).__name__}: {e}"
-            if module_name in sys.modules:
-                sys.modules.pop(module_name, None)
+            _forget_modules(module_name)
 
     def get_commands_help(self, admin: bool = False, in_group: bool = False) -> List[str]:
         lines = []
@@ -1058,8 +1091,10 @@ class PluginManager:
             text = result.get("text")
             if action == "reply":
                 reply = str(text or "").strip()
-                if reply:
+                if reply and "send_message" in record.permissions:
                     return {"action": "reply", "text": reply}
+                if reply:
+                    _log(f"[插件] {record.plugin_id} on_message reply 未声明 send_message，已跳过")
                 continue
             if text is not None:
                 current["text"] = str(text)

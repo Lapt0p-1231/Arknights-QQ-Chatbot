@@ -1,5 +1,5 @@
 在QQ上的《明日方舟》角色聊天机器人——环境配置教程
-适用版本：v1.5.1
+适用版本：v1.5.2
 
 ==================================================
 一、需要准备什么
@@ -110,6 +110,24 @@ api.json 含有私密密钥，不要把它发给他人或上传到公开仓库�
 使用 setx 后必须关闭并重新打开 PowerShell，或直接重新双击启动脚本。
 如果 QQ_BOT_QQ 没有正确设置，机器人可能无法识别 @，也可能不能过滤自己的消息。
 
+从 v1.5.2 起，OneBot 网关和 WebUI 增加了访问 Token。先生成两个不同的随机值：
+
+  .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
+
+OneBot 网关 Token（必填）：
+
+  setx QQ_BOT_WS_TOKEN "第一个随机值"
+
+机器人默认监听 0.0.0.0:8080，非回环监听在缺少 Token 时会拒绝启动。
+在 SnowLuma 的反向 WebSocket 客户端中填写同一个 Token。
+
+WebUI Token（推荐）：
+
+  setx QQ_BOT_WEB_TOKEN "第二个随机值"
+
+设置后访问 http://127.0.0.1:8090 时，用户名填 admin，密码填该 Token。
+不设置 WebUI Token 时只允许本机回环访问；对外监听时必须设置 Token 并使用 HTTPS。
+
 可选：Server酱异常告警
 
   setx QQ_BOT_SERVER_CHAN_KEY "你的Server酱SendKey"
@@ -147,7 +165,8 @@ api.json 含有私密密钥，不要把它发给他人或上传到公开仓库�
 
    ws://127.0.0.1:8080
 
-8. 保存并启用该连接。
+8. 在同一个连接配置中填写 Token，值必须与 QQ_BOT_WS_TOKEN 完全一致。
+9. 保存并启用该连接。
 
 注意连接方向：QQ-BOT.py 在 8080 端口启动服务，SnowLuma 主动连接它。
 如果连接失败，先启动 QQ-BOT.py，再在 SnowLuma 控制台中重连。
@@ -177,8 +196,7 @@ SnowLuma 控制台和 QQ 登录数据也不要开放到公网；请使用独立�
 
   .\.venv\Scripts\python.exe QQ-BOT.py
 
-WebUI 默认仅监听 127.0.0.1，且没有登录认证。
-不要将 QQ_BOT_WEB_HOST 改成 0.0.0.0 或公网地址，除非你已经自行增加访问控制。
+WebUI 默认仅监听 127.0.0.1。设置 QQ_BOT_WEB_TOKEN 后，浏览器登录用户名填 admin、密码填该 Token。不要将 QQ_BOT_WEB_HOST 改成 0.0.0.0 或公网地址，除非已配置 Token、HTTPS 和访问控制。
 
 ==================================================
 八、启用白金人设
@@ -232,6 +250,7 @@ WebUI 默认仅监听 127.0.0.1，且没有登录认证。
    - 确认 Docker Desktop 已正常运行，并执行 docker ps 检查 snowluma 容器。
    - 确认已先运行 QQ-BOT.py。
    - 检查是否选成“反向 WebSocket 客户端”，地址是否为 8080。
+   - 确认 SnowLuma 的 Token 与 QQ_BOT_WS_TOKEN 完全一致。
    - 检查 8080 是否被其他程序占用：
 
      netstat -ano | findstr :8080
@@ -244,5 +263,9 @@ WebUI 默认仅监听 127.0.0.1，且没有登录认证。
    - 模型路由、提示词和多数 WebUI 设置会实时生效。
    - 环境变量修改后需要重启 QQ-BOT.py。
    - 使用 setx 后需要重新打开终端或启动脚本。
+
+7. 打开 WebUI 提示登录或 401
+   - 用户名填 admin，密码填 QQ_BOT_WEB_TOKEN。
+   - 如果返回 403，检查是否使用了允许的 Host；本机使用 127.0.0.1，反代域名需加入 QQ_BOT_WEB_ALLOWED_HOSTS。
 
 完成以上步骤后，即可在私聊中 @或直接发送消息测试，在群聊中优先使用 @机器人 测试。

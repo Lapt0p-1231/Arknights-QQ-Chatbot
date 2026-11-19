@@ -74,7 +74,7 @@ plugins/my-plugin/
 | `stylesheet`| string | 否 | 主题样式文件相对路径（仅 `type: "theme"` 时有效，如 `theme.css`） |
 
 ### 支持的权限声明 (`permissions`)：
-- `"send_message"`：允许插件调用私聊/群聊主动发消息接口（`ctx.send_private`, `ctx.send_group`, `ctx.reply`）。
+- `"send_message"`：允许插件调用 `ctx.send_private`、`ctx.send_group`、`ctx.reply`，也用于 `on_message` 返回直接回复的 `action: "reply"`。文本发送现在等待 OneBot 回执，失败或回执超时会抛出异常，请勿自动重复发送。
 - `"model"`：允许插件调用机器人已配置的主/副大语言模型（`ctx.call_model`）。
 - `"settings.read"`：允许插件读取机器人运行设置（`ctx.settings`）。
 

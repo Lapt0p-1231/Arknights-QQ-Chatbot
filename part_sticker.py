@@ -15,7 +15,7 @@ import time
 import builtins
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
-import aiohttp
+from part_media import download_image
 
 
 # 解决后台运行时 print() 不可见的问题：
@@ -83,18 +83,6 @@ try:
         os.rmdir(_legacy_images_dir)
 except Exception:
     pass
-
-_session = None
-
-
-def _get_session():
-    global _session
-    if _session is None or _session.closed:
-        _session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=30, keepalive_timeout=30)
-        )
-    return _session
-
 
 _db_lock = asyncio.Lock()
 # WebUI 与 QQ-BOT 主程序是两个独立进程，各自持有本模块的内存缓存。
@@ -289,16 +277,7 @@ def _backfill_phashes(db: Dict[str, Any]) -> bool:
 
 
 async def _download_image(url: str, timeout: int = 15) -> Optional[bytes]:
-    """下载图片字节流"""
-    try:
-        async with _get_session().get(url, timeout=timeout) as resp:
-            if resp.status == 200:
-                data = await resp.read()
-                if data and len(data) <= 15 * 1024 * 1024:
-                    return data
-    except Exception as e:
-        print(f"[表情] 下载图片失败 ({url[:60]}...): {e}")
-    return None
+    return await download_image(url, 15 * 1024 * 1024, timeout)
 
 
 async def capture_from_event(
@@ -332,6 +311,8 @@ async def capture_from_event(
             continue
         seg_type = seg.get("type")
         seg_data = seg.get("data", {}) or {}
+        if not isinstance(seg_data, dict):
+            continue
 
         # ====== 1. 商城大表情 (mface / 带emoji_id的image) ======
         # 注意：部分 NapCat 版本会把商城大表情包装成 type="image" 并附带 emoji_id/package_id
@@ -1122,9 +1103,9 @@ async def process_reply_stickers(
 
     # ====== 斗图模式 ======
     if is_duel:
-        sticker = await pick_sticker_by_mood(keyword=ai_keyword, text=clean_text, mood=mood, is_duel=True)
+        sticker = await pick_sticker_by_mood(keyword=ai_keyword, text=clean_text, mood=mood, is_duel=True, scope=scope)
         if sticker:
-            seg = build_replay_segment(sticker)
+            seg = await asyncio.to_thread(build_replay_segment, sticker)
             if seg:
                 _last_sticker_time[scope] = time.time()
                 return "", seg
@@ -1140,9 +1121,9 @@ async def process_reply_stickers(
     if not bucket:
         return clean_text, None
 
-    sticker = pick_sticker_by_emotion(bucket, scope, str(pending.get("tag") or ""))
+    sticker = await asyncio.to_thread(pick_sticker_by_emotion, bucket, scope, str(pending.get("tag") or ""))
     if sticker:
-        seg = build_replay_segment(sticker)
+        seg = await asyncio.to_thread(build_replay_segment, sticker)
         if seg:
             _last_sticker_time[scope] = time.time()
             return clean_text, seg
@@ -1172,7 +1153,12 @@ def is_incoming_pure_sticker(event: Dict[str, Any]) -> bool:
         if is_mface_seg or is_image_seg:
             has_sticker = True
         elif st == "text":
-            text_content += sd.get("text", "")
+            text_content += str(sd.get("text") or "")
     # 只要包含表情/图片，且附加文字小于等于2个字（如“？”“哈”），即视为纯表情/表情包投喂
     return has_sticker and len(text_content.strip()) <= 2
+
+
+def has_sticker_segment(event):
+    return any(isinstance(seg, dict) and seg.get("type") in ("image", "mface", "market_face")
+               for seg in event.get("message") or [])
 

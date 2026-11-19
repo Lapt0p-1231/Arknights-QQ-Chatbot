@@ -1,6 +1,6 @@
 # 在QQ上的《明日方舟》角色聊天机器人
 
-当前版本：v1.5.1 · [更新日志](CHANGELOG.md)
+当前版本：v1.5.2 · [更新日志](CHANGELOG.md) · [升级说明](升级说明-调度与安全.md)
 
 基于 SnowLuma（Docker）+ OpenAI 兼容接口的 QQ 聊天机器人，内置冷热双层记忆（该方案要求一定电脑配置，详见https://github.com/Lapt0p-1231/bionic-memory ）、语义召回、角色扮演、群聊插话和本地 WebUI。
 
@@ -11,7 +11,10 @@
 ## 功能
 
 - 私聊与群聊：@触发、名字触发、冷却控制、引用回复、图片识别
+- 会话调度：不同会话并行处理，同一会话严格有序；文字先发，表情、总结和抓图后台执行
 - 冷热记忆：SQLite 热记忆 + ChromaDB 冷记忆，支持向量入库门槛与 RAG 时间新鲜度衰减
+- 已确认轮次：按 OneBot 回执记录实际发送的消息，用于引用、记忆总结和精确重生成
+- 安全保护：OneBot/WebUI Token、Host/Origin 校验、管理密钥不回显
 - 记忆发散：定时回顾高重要度记忆，生成低置信度的“梦境”式内心独白
 - 主动搭话：记忆发散与时态碎碎念双轨，支持私聊/群聊多目标、勿扰时段与群冷场门槛
 - 情绪表情包：AI/PY 判断、情绪桶选图、细标签优选、可选自动打标、斗图与捕获风控
@@ -33,7 +36,7 @@
 
 ## 安装
 
-第一次部署请先阅读根目录的 **`环境配置教程.txt`**，其中包含 Python、Docker Desktop、SnowLuma、模型接口、机器人身份和启动检查的完整步骤。
+第一次部署请先阅读根目录的 **`环境配置教程.txt`**；从旧版升级请先阅读 [`升级说明-调度与安全.md`](升级说明-调度与安全.md)。升级会修改 `memory.db` 表结构，请先停止旧进程并备份数据。
 
 ```powershell
 git clone https://github.com/Lapt0p-1231/Arknights-QQ-Chatbot.git
@@ -41,6 +44,8 @@ cd Arknights-QQ-Chatbot
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+
+需要运行测试时再安装开发依赖：`.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt`。
 
 复制示例模型配置：
 
@@ -56,16 +61,27 @@ Copy-Item api.example.json api.json
 - `sub`：负责群聊判断、记忆总结、表情包发布判断和发散的副模型
 - `sticker_tag`：可选的表情包自动打标模型，未单独配置时默认跟随 `sub`
 
-## 配置机器人身份
+## 配置机器人身份与访问 Token
 
-机器人 QQ 与管理员 QQ 通过环境变量设置，不在源码中保存。
+机器人 QQ、管理员 QQ 和访问 Token 通过环境变量设置，不在源码中保存。
 
 PowerShell 临时设置（仅当前窗口有效）：
 
 ```powershell
 $env:QQ_BOT_QQ = "你的机器人QQ号"
 $env:QQ_BOT_ADMIN_QQ = "你的QQ号"
+$env:QQ_BOT_WS_TOKEN = "生成一个随机Token"
+$env:QQ_BOT_WEB_TOKEN = "另一个随机Token"
 ```
+
+生成随机 Token：
+
+```powershell
+.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+- `QQ_BOT_WS_TOKEN` 必填：机器人默认监听 `0.0.0.0:8080`，非回环监听不带 Token 会拒绝启动。SnowLuma 的反向 WebSocket Token 必须填写同一个值。
+- `QQ_BOT_WEB_TOKEN` 可选，但推荐设置。设置后浏览器访问 WebUI 时用户名填 `admin`、密码填该 Token；未设置时只允许本机回环访问。
 
 多个管理员使用英文逗号分隔：
 
@@ -73,14 +89,25 @@ $env:QQ_BOT_ADMIN_QQ = "你的QQ号"
 $env:QQ_BOT_ADMIN_QQ = "123456789,987654321"
 ```
 
-如需永久保存，可改用 `setx QQ_BOT_QQ "你的机器人QQ号"`，设置后重新打开终端。
+如需永久保存，可改用 `setx`，设置后重新打开终端：
+
+```powershell
+setx QQ_BOT_QQ "你的机器人QQ号"
+setx QQ_BOT_WS_TOKEN "生成一个随机Token"
+setx QQ_BOT_WEB_TOKEN "另一个随机Token"
+```
 
 可选环境变量：
 
 | 变量 | 用途 | 默认值 |
 |---|---|---|
-| `QQ_BOT_QQ` | 机器人自身 QQ，用于识别 @与过滤自身消息 | `0`，必须配置 |
+| `QQ_BOT_QQ` | 机器人自身 QQ，用于识别 @、过滤自身消息和校验事件账号 | `0`，必须配置 |
 | `QQ_BOT_ADMIN_QQ` | 管理员 QQ 列表 | 空 |
+| `QQ_BOT_WS_TOKEN` | OneBot 网关鉴权 Token，SnowLuma 必须填写相同值 | 空；非回环监听时必填 |
+| `QQ_BOT_WS_HOST` | OneBot WebSocket 监听地址 | `0.0.0.0` |
+| `QQ_BOT_WS_PORT` | OneBot WebSocket 端口 | `8080` |
+| `QQ_BOT_WEB_TOKEN` | WebUI Basic 鉴权密码（用户名 `admin`） | 空；仅回环可无 Token |
+| `QQ_BOT_WEB_ALLOWED_HOSTS` | 额外允许访问 WebUI 的域名，逗号分隔 | 空 |
 | `QQ_BOT_API_KEY` | `api.json` 未配置时的接口密钥兜底 | 空 |
 | `QQ_BOT_SERVER_CHAN_KEY` | Server酱 SendKey，用于异常微信告警 | 空，不开启 |
 | `QQ_BOT_WEB_HOST` | WebUI 监听地址 | `127.0.0.1` |
@@ -92,9 +119,10 @@ $env:QQ_BOT_ADMIN_QQ = "123456789,987654321"
 2. 按 `环境配置教程.txt` 创建并启动 `snowluma` 容器。
 3. 打开 SnowLuma 控制台：http://127.0.0.1:5099，登录机器人 QQ。
 4. 在 SnowLuma 网络配置中添加“反向 WebSocket 客户端”，地址填写 `ws://127.0.0.1:8080`。
-5. 保存并启用连接。
+5. 在同一个反向 WebSocket 配置中填写 Token，值必须与 `QQ_BOT_WS_TOKEN` 完全一致。
+6. 保存并启用连接。
 
-`QQ-BOT.py` 会在本机 `8080` 端口启动 WebSocket 服务，等待 SnowLuma 接入。请保持该端口未被其他程序占用，不要将其直接暴露到公网。
+`QQ-BOT.py` 会在本机 `8080` 端口启动 WebSocket 服务，等待 SnowLuma 接入。非回环监听必须设置 Token；请保持端口未被其他程序占用，不要将其直接暴露到公网。
 
 ## 启动
 
@@ -112,7 +140,7 @@ $env:QQ_BOT_ADMIN_QQ = "123456789,987654321"
 
 WebUI 地址：http://127.0.0.1:8090
 
-WebUI 默认没有登录认证，请不要将监听地址改为公网地址。
+WebUI 默认仅允许本机回环访问。设置 `QQ_BOT_WEB_TOKEN` 后，浏览器登录用户名填 `admin`、密码填该 Token；对外监听时必须配置 Token 并使用 HTTPS。请不要将监听地址直接暴露到公网。
 
 ## 插件系统
 
@@ -133,7 +161,7 @@ Python 插件是**可信代码**，不是安全沙箱。安装第三方插件前
 | 指令 | 功能 |
 |---|---|
 | `/cmd help` | 按当前权限与场景查看指令 |
-| `/rl` | 重新生成上一条回复 |
+| `/rl` | 重新生成本人最近一条已确认回复 |
 | `/char set <角色设定>` | 私聊设置专属人格 |
 | `/char clear` | 清除专属人格 |
 | `/user set <用户信息>` | 记录用户信息 |
@@ -163,6 +191,8 @@ Python 插件是**可信代码**，不是安全沙箱。安装第三方插件前
 ```text
 Arknights-QQ-Chatbot/
 ├── QQ-BOT.py             # 消息处理、模型调用与机器人主循环
+├── part_runtime.py       # 会话调度、网关鉴权与事件校验
+├── part_media.py         # 图片下载与公网目标校验
 ├── part_record.py        # 冷热记忆、向量召回与档案存储
 ├── part_command.py       # 消息发送与指令处理
 ├── part_prompt.py        # 提示词加载与开关管理
@@ -173,13 +203,16 @@ Arknights-QQ-Chatbot/
 ├── part_web.py           # FastAPI WebUI 后端
 ├── prompts/              # 通用提示词与可选白金人设
 ├── plugins/              # 插件开发文档与主题示例
+├── tests/                # 调度、鉴权与 WebUI 回归测试
 ├── webui/index.html      # WebUI 前端
 ├── webui/plugin_host.js  # 插件 iframe 宿主桥接
 ├── webui/plugin_bridge.js # 插件页面 RPC 桥接
 ├── api.example.json      # 模型配置模板
 ├── 环境配置教程.txt       # 首次部署的完整环境配置步骤
+├── 升级说明-调度与安全.md # 从旧版升级前的迁移与安全说明
 ├── CHANGELOG.md          # 版本更新日志
-└── requirements.txt
+├── requirements.txt      # 运行依赖
+└── requirements-dev.txt  # 测试依赖
 ```
 
 ## 相关项目

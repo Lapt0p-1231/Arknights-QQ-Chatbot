@@ -12,7 +12,7 @@ from contextlib import contextmanager
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("QQ_BOT_DATA_DIR", os.path.join(BASE_DIR, "data"))
 MODEL_DIR = os.path.join(BASE_DIR, "models")
-USER_LOG_DIR = os.path.join(BASE_DIR, "user_log")  # 旧JSON档案（迁移用）
+USER_LOG_DIR = os.environ.get("QQ_BOT_USER_LOG_DIR", os.path.join(BASE_DIR, "user_log"))
 DB_FILE = os.path.join(DATA_DIR, "memory.db")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -28,7 +28,7 @@ def log(text):
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {text}"
     print(line)
     try:
-        path = os.path.join(BASE_DIR, "QQ-BOT.log")
+        path = os.environ.get("QQ_BOT_LOG_FILE", os.path.join(BASE_DIR, "QQ-BOT.log"))
         if os.path.exists(path) and os.path.getsize(path) > 10 * 1024 * 1024:
             os.replace(path, path + ".1")
         with open(path, "a", encoding="utf-8") as f:
@@ -40,13 +40,12 @@ def log(text):
 # ====== SQLite ======
 def _db():
     # timeout 防止并发写入（发散/总结/消息处理）偶发 database is locked
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    return sqlite3.connect(DB_FILE, timeout=10)
 
 def _init_db():
     conn = _db()
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS user_profile (
             user_id TEXT PRIMARY KEY,
@@ -71,19 +70,32 @@ def _init_db():
         CREATE INDEX IF NOT EXISTS idx_meta_user ON memory_meta(user_id, importance);
         CREATE TABLE IF NOT EXISTS memory_epoch (
             user_id TEXT PRIMARY KEY,
-            epoch INTEGER NOT NULL DEFAULT 0
+            epoch INTEGER NOT NULL DEFAULT 0,
+            cleared_at REAL NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS musing_used (
             doc_id TEXT PRIMARY KEY,
             user_id TEXT,
             used_at REAL
         );
+        CREATE TABLE IF NOT EXISTS chat_turn (
+            id TEXT PRIMARY KEY, scope TEXT NOT NULL, member TEXT NOT NULL,
+            input_id TEXT, input_text TEXT NOT NULL, reply_id TEXT,
+            ts REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_turn_lookup ON chat_turn(scope, member, active, ts);
         """)
         # 轻量迁移：chat_history 增加 message_id，用于查引用回复的原文
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(chat_history)").fetchall()]
-        if "message_id" not in cols:
-            conn.execute("ALTER TABLE chat_history ADD COLUMN message_id TEXT")
-            log("[记忆系统] chat_history 已迁移：新增 message_id 列")
+        conn.execute("BEGIN IMMEDIATE")
+        for table, column, definition in (
+            ("chat_history", "message_id", "TEXT"), ("chat_history", "turn_id", "TEXT"),
+            ("memory_meta", "turn_id", "TEXT"), ("memory_epoch", "cleared_at", "REAL NOT NULL DEFAULT 0"),
+        ):
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_meta_turn ON memory_meta(turn_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_history_turn ON chat_history(turn_id)")
         conn.commit()
     finally:
         conn.close()
@@ -109,20 +121,45 @@ def _transaction():
 def get_epoch(user_id):
     conn = _db()
     try:
-        row = conn.execute(
-            "SELECT epoch FROM memory_epoch WHERE user_id=?", (str(user_id),)
-        ).fetchone()
-        return int(row[0]) if row else 0
+        return _epoch_on(conn, user_id)
     finally:
         conn.close()
+
+
+def _epoch_on(conn, user_id):
+    row = conn.execute("SELECT epoch FROM memory_epoch WHERE user_id=?", (str(user_id),)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def get_epochs(scopes, received_at=None):
+    conn = _db()
+    try:
+        conn.execute("BEGIN")
+        result = {}
+        for uid in dict.fromkeys(scopes):
+            row = conn.execute("SELECT epoch,cleared_at FROM memory_epoch WHERE user_id=?", (str(uid),)).fetchone()
+            if row and received_at is not None and row[1] >= received_at:
+                return None
+            result[uid] = int(row[0]) if row else 0
+        return result
+    finally:
+        conn.close()
+
+
+def epochs_match(epochs):
+    return get_epochs(epochs) == epochs
+
+
+def _turn_active(conn, turn_id):
+    return conn.execute("SELECT 1 FROM chat_turn WHERE id=? AND active=1", (turn_id,)).fetchone() is not None
 
 
 def bump_epoch(conn, user_id):
     """在已开启的事务里把某个档案的纪元 +1。"""
     conn.execute(
-        "INSERT INTO memory_epoch(user_id, epoch) VALUES (?, 1) "
-        "ON CONFLICT(user_id) DO UPDATE SET epoch = epoch + 1",
-        (str(user_id),)
+        "INSERT INTO memory_epoch(user_id, epoch, cleared_at) VALUES (?, 1, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET epoch = epoch + 1, cleared_at=excluded.cleared_at",
+        (str(user_id), time.time())
     )
     row = conn.execute(
         "SELECT epoch FROM memory_epoch WHERE user_id=?", (str(user_id),)
@@ -194,7 +231,7 @@ def _embed(texts):
 
 # 写入一条向量记忆，type: dialogue / musing / memory
 def add_vector(user_id, content, type="dialogue", valence=0.0, arousal=0.0, importance=0.5,
-               source_id=None, confidence=None):
+               source_id=None, confidence=None, *, expected_epoch=None, turn_id=None):
     if not content or not content.strip():
         return None
     # 发散产物默认低置信度：它是梦，不是事实
@@ -202,7 +239,10 @@ def add_vector(user_id, content, type="dialogue", valence=0.0, arousal=0.0, impo
         confidence = 0.4 if type == "musing" else 1.0
     doc_id = uuid.uuid4().hex
     ts = time.time()
+    indexed = committed = False
     try:
+        if expected_epoch is None:
+            expected_epoch = get_epoch(user_id)
         vector = _embed([content])[0]
         _get_collection().add(
             ids=[doc_id],
@@ -219,26 +259,43 @@ def add_vector(user_id, content, type="dialogue", valence=0.0, arousal=0.0, impo
                 "importance": float(importance)
             }]
         )
-        conn = _db()
-        try:
+        indexed = True
+        with _transaction() as conn:
+            if _epoch_on(conn, user_id) != expected_epoch or (turn_id and not _turn_active(conn, turn_id)):
+                return None
+            if source_id and not conn.execute(
+                "SELECT 1 FROM memory_meta WHERE doc_id=? AND user_id=?", (source_id, str(user_id))
+            ).fetchone():
+                return None
             conn.execute(
-                "INSERT INTO memory_meta VALUES (?,?,?,?,?,?,?)",
-                (doc_id, str(user_id), type, valence, arousal, importance, ts)
+                "INSERT INTO memory_meta(doc_id,user_id,type,valence,arousal,importance,ts,turn_id) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (doc_id, str(user_id), type, valence, arousal, importance, ts, turn_id)
             )
-            conn.commit()
-        finally:
-            conn.close()
+        committed = True
         log(f"[向量] 已存入 {user_id} 的 {type} 记忆（重要度 {importance}）")
         return doc_id
     except Exception as e:
         log(f"[向量] 存储失败 {user_id}: {e}")
         return None
+    finally:
+        if indexed and not committed:
+            remove_index_documents([doc_id])
+
+
+def remove_index_documents(ids):
+    if ids:
+        try:
+            _get_collection().delete(ids=ids)
+        except Exception as exc:
+            # SQLite 先删除索引元数据。即使物理清理失败，孤儿也不可召回。
+            log(f"[向量] 索引清理失败（{len(ids)} 条）: {exc}")
 
 
 # 语义召回：scopes 为档案名列表（私聊=[user_id]，群聊=[群档案, 发送者档案]）
 # min_similarity：cosine 相似度下限（0-1），低于此值的记忆不召回（宁可没有，不要硬塞）
-def recall(scopes, query, top_k=3, min_importance=0.0, min_similarity=0.0):
-    if not query or not query.strip():
+def recall(scopes, query, top_k=3, min_importance=0.0, min_similarity=0.0, *, exclude_turn=None):
+    if not scopes or not query or not query.strip():
         return []
     try:
         vector = _embed([query])[0]
@@ -255,23 +312,27 @@ def recall(scopes, query, top_k=3, min_importance=0.0, min_similarity=0.0):
         # cosine 距离转相似度
         distances = result.get("distances", [[]])[0]
         sims = {doc_id: 1.0 - d for doc_id, d in zip(result.get("ids", [[]])[0], distances)}
-        # 用 meta 表的重要性过滤排序
+        ids = result.get("ids", [[]])[0]
+        # SQLite 元数据是事实源，不能把已删除/未提交的索引孤儿当成正常记忆。
         conn = _db()
         try:
-            marks = ",".join("?" * len(scopes))
+            marks = ",".join("?" * len(ids))
             rows = conn.execute(
-                f"SELECT doc_id, importance, type, ts FROM memory_meta WHERE user_id IN ({marks})",
-                [str(s) for s in scopes]
+                f"SELECT doc_id, importance, type, ts, user_id FROM memory_meta WHERE doc_id IN ({marks}) "
+                "AND (? IS NULL OR turn_id IS NULL OR turn_id != ?)",
+                [*ids, exclude_turn, exclude_turn],
             ).fetchall()
         finally:
             conn.close()
         # chroma 的 ids 与 documents 对齐
-        ids = result.get("ids", [[]])[0]
-        meta_map = {r[0]: (r[1], r[2], r[3]) for r in rows}
+        allowed = set(map(str, scopes))
+        meta_map = {doc_id: (imp, kind, ts) for doc_id, imp, kind, ts, uid in rows if uid in allowed}
         now = time.time()
         items = []
         for doc_id, doc in zip(ids, docs):
-            imp, mtype, ts = meta_map.get(doc_id, (0.5, "dialogue", 0.0))
+            if doc_id not in meta_map:
+                continue
+            imp, mtype, ts = meta_map[doc_id]
             sim = sims.get(doc_id, 0.0)
             if imp < min_importance:
                 continue
@@ -395,38 +456,30 @@ def _archive_type(user_id):
     return "private", None, uid
 
 
-def _touch_on(conn, uid, display_name=None):
+def _touch_on(conn, uid, display_name=None, identify_speaker=False):
     row = conn.execute("SELECT data FROM user_profile WHERE user_id=?", (uid,)).fetchone()
-    if row is None:
-        data = {"user_id": uid}
-        if display_name:
-            data["display_name"] = display_name
-        conn.execute("INSERT INTO user_profile VALUES (?,?)",
+    data = json.loads(row[0]) if row else {"user_id": uid}
+    before = dict(data)
+    if display_name and data.get("display_name") != display_name:
+        aliases = data.get("display_aliases") or []
+        previous = data.get("display_name")
+        data["display_aliases"] = list(dict.fromkeys(
+            [name for name in [previous, *aliases] if isinstance(name, str) and name and name != display_name]
+        ))[:5]
+        data["display_name"] = display_name
+    if identify_speaker and not data.get("speaker_id"):
+        data["speaker_id"] = uuid.uuid4().hex[:12]
+    if not row or data != before:
+        conn.execute("INSERT INTO user_profile VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
                      (uid, json.dumps(data, ensure_ascii=False)))
-        return True
-    if display_name:
-        try:
-            data = json.loads(row[0]) or {}
-        except Exception:
-            data = {}
-        if data.get("display_name") != display_name:
-            data["display_name"] = display_name
-            conn.execute("UPDATE user_profile SET data=? WHERE user_id=?",
-                         (json.dumps(data, ensure_ascii=False), uid))
-            return True
-    return False
+    return data.get("speaker_id")
 
 
 def touch_archive(user_id, display_name=None):
     """确保档案存在（用于记录所有说过话的群友/群聊/私聊）。"""
     try:
-        conn = _db()
-        try:
-            changed = _touch_on(conn, str(user_id), display_name)
-            if changed:
-                conn.commit()
-        finally:
-            conn.close()
+        with _transaction() as conn:
+            _touch_on(conn, str(user_id), display_name)
     except Exception as e:
         log(f"[档案] 记录 {user_id} 失败: {e}")
 
@@ -434,14 +487,9 @@ def touch_archive(user_id, display_name=None):
 def touch_group_archives(group_id, user_id, nickname=None):
     """一条群消息同时留下：群档案 + 发送者个人档案（单次连接）。"""
     try:
-        conn = _db()
-        try:
-            changed = _touch_on(conn, f"group_{group_id}")
-            changed = _touch_on(conn, f"group_{group_id}_{user_id}", nickname) or changed
-            if changed:
-                conn.commit()
-        finally:
-            conn.close()
+        with _transaction() as conn:
+            _touch_on(conn, f"group_{group_id}")
+            return _touch_on(conn, f"group_{group_id}_{user_id}", nickname, identify_speaker=True)
     except Exception as e:
         log(f"[档案] 记录群 {group_id} 失败: {e}")
 
@@ -528,17 +576,13 @@ def delete_archive(user_id):
             ).fetchall()
             conn.execute("DELETE FROM user_profile WHERE user_id=?", (uid,))
             conn.execute("DELETE FROM chat_history WHERE user_id=?", (uid,))
+            conn.execute("DELETE FROM chat_turn WHERE scope=? OR member=?", (uid, uid))
             conn.execute("DELETE FROM memory_meta WHERE user_id=?", (uid,))
             conn.execute("DELETE FROM musing_used WHERE user_id=?", (uid,))
-        ids = [r[0] for r in rows]
-        if ids:
-            _get_collection().delete(ids=ids)
-        settings = load_settings()
-        overrides = settings.get("musing_overrides") or {}
-        if uid in overrides:
-            overrides.pop(uid)
-            settings["musing_overrides"] = overrides
-            save_settings(settings)
+        remove_index_documents([r[0] for r in rows])
+        def remove_override(settings):
+            settings["musing_overrides"] = {k: v for k, v in (settings.get("musing_overrides") or {}).items() if k != uid}
+        mutate_settings(remove_override)
         sync_archive_index(force=True)
         log(f"[档案] 已删除 {uid}（历史/向量/人设）")
         return True
@@ -638,7 +682,7 @@ def list_memories(user_id, limit=50):
 
 # 语义检索（带相似度分数），WebUI 用
 def search_vectors(scopes, query, top_k=5):
-    if not query or not query.strip():
+    if not scopes or not query or not query.strip():
         return []
     try:
         vector = _embed([query])[0]
@@ -656,16 +700,19 @@ def search_vectors(scopes, query, top_k=5):
             return []
         conn = _db()
         try:
-            marks = ",".join("?" * len(scopes))
+            marks = ",".join("?" * len(ids))
             rows = conn.execute(
-                f"SELECT doc_id, importance FROM memory_meta WHERE user_id IN ({marks})",
-                [str(s) for s in scopes]
+                f"SELECT doc_id, importance, user_id FROM memory_meta WHERE doc_id IN ({marks})",
+                ids
             ).fetchall()
         finally:
             conn.close()
-        imp_map = {r[0]: r[1] for r in rows}
+        allowed = set(map(str, scopes))
+        imp_map = {doc_id: imp for doc_id, imp, uid in rows if uid in allowed}
         items = []
         for doc_id, doc, meta, dist in zip(ids, docs, metas, dists):
+            if doc_id not in imp_map:
+                continue
             meta = meta or {}
             items.append({
                 "id": doc_id,
@@ -768,13 +815,9 @@ def update_vector(doc_id, content=None, importance=None):
 
 def delete_vector(doc_id):
     try:
-        _get_collection().delete(ids=[doc_id])
-        conn = _db()
-        try:
+        with _transaction() as conn:
             conn.execute("DELETE FROM memory_meta WHERE doc_id=?", (doc_id,))
-            conn.commit()
-        finally:
-            conn.close()
+        remove_index_documents([doc_id])
         log(f"[向量] 已删除记忆 {doc_id}")
         return True
     except Exception as e:
@@ -870,76 +913,77 @@ def load_settings():
         return dict(DEFAULT_SETTINGS)
 
 def save_settings(settings):
-    tmp = SETTINGS_FILE + ".tmp"
+    """Compatibility API: apply supplied keys. Prefer patch_settings/mutate_settings."""
+    return patch_settings(settings)
+
+
+def _write_settings(settings):
+    tmp = f"{SETTINGS_FILE}.{uuid.uuid4().hex}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=4)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, SETTINGS_FILE)
-    except Exception as e:
-        print(f"[设置] 保存设置失败: {e}")
+    finally:
         try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
+            os.remove(tmp)
+        except FileNotFoundError:
             pass
+
+
+def mutate_settings(change):
+    """Hold the cross-process writer lock across read, mutation and atomic replacement."""
+    with _transaction():
+        settings = load_settings()
+        change(settings)
+        _write_settings(settings)
+        return settings
+
+
+def patch_settings(patch):
+    return mutate_settings(lambda settings: settings.update(patch))
 
 # ====== /atswitch ======
 def toggle_at_only():
-    settings = load_settings()
-    settings["at_only"] = not settings.get("at_only", True)
-    save_settings(settings)
+    settings = mutate_settings(lambda s: s.update(at_only=not s["at_only"]))
     print(f"[设置] 群聊触发方式已切换为：{'仅提及（@/喊名字）' if settings['at_only'] else '自动插嘴 + 提及'}")
     return settings["at_only"]
 
 # ====== /cd set 和 /atcd set ======
 def set_reply_cooldown(seconds, key="reply_cooldown"):
-    settings = load_settings()
-    settings[key] = seconds
-    save_settings(settings)
+    patch_settings({key: seconds})
     print(f"[设置] {key} 已设置为 {seconds} 秒")
     return seconds
 
 # ====== /faver set ======
 def set_favorability(user_id, value):
-    memory = load_user_memory(user_id)
-    memory["favorability"] = max(-100, min(100, int(value)))
-    save_user_memory(user_id, memory)
-    print(f"[好感] 已设置 {user_id} 的好感度为 {memory['favorability']}")
-    return memory["favorability"]
+    value = max(-100, min(100, int(value)))
+    update_profile(user_id, lambda data: {"favorability": value, "favor_revision": data.get("favor_revision", 0) + 1})
+    return value
 
 # ====== /name set ======
 def set_name_keywords(names):
-    settings = load_settings()
-    settings["name_keywords"] = names
-    save_settings(settings)
+    patch_settings({"name_keywords": names})
     print(f"[设置] 喊名字关键词已设置为：{'、'.join(names)}")
     return names
 
 # ====== /infer set ======
 def set_infer_mode(mode):
-    settings = load_settings()
-    settings["infer_mode"] = mode
-    save_settings(settings)
+    patch_settings({"infer_mode": mode})
     print(f"[设置] 潜水判断方式已切换为：{mode}")
     return mode
 
 # ====== /pro set ======
 def set_dive_probability(probability):
-    settings = load_settings()
-    settings["dive_probability"] = probability
-    save_settings(settings)
+    patch_settings({"dive_probability": probability})
     print(f"[设置] 潜水插嘴概率已设置为 {probability:g}%")
     return probability
 
 
 # ====== 表情包设置 ======
 def set_sticker_setting(key, value):
-    settings = load_settings()
-    settings[key] = value
-    save_settings(settings)
-    return settings
+    return patch_settings({key: value})
 
 
 # ======== 档案读写（SQLite） ========
@@ -955,7 +999,7 @@ _DEFAULT_PROFILE = {
     "summary_counter": 0,
 }
 
-def load_user_memory(user_id, hot_limit=None):
+def load_user_memory(user_id, hot_limit=None, *, exclude_turn=None, exclude_input=None, profile_only=False):
     user_id = str(user_id)
     conn = _db()
     try:
@@ -970,9 +1014,12 @@ def load_user_memory(user_id, hot_limit=None):
             log(f"[记忆系统] 识别到新用户 {user_id}，已建档")
 
         # 热层：最近 hot_limit 轮（默认 HOT_LIMIT）
-        rows = conn.execute(
-            "SELECT role, content FROM chat_history WHERE user_id=? ORDER BY ts DESC LIMIT ?",
-            (user_id, int(hot_limit) if hot_limit else HOT_LIMIT)
+        rows = [] if profile_only else conn.execute(
+            "SELECT role, content FROM chat_history WHERE user_id=? "
+            "AND (? IS NULL OR turn_id IS NULL OR turn_id != ?) "
+            "AND (? IS NULL OR role != 'user' OR message_id IS NULL OR message_id != ?) "
+            "ORDER BY ts DESC,rowid DESC LIMIT ?",
+            (user_id, exclude_turn, exclude_turn, exclude_input, exclude_input, int(hot_limit) if hot_limit else HOT_LIMIT)
         ).fetchall()
         data["chat_history"] = [{"role": r, "content": c} for r, c in reversed(rows)]
         return data
@@ -1013,15 +1060,14 @@ def save_user_memory(user_id, memory_data):
         conn.close()
 
 
-def update_profile(user_id, patch, expected_epoch=None):
+def update_profile(user_id, patch, expected_epoch=None, *, turn_id=None):
     """事务内读改写档案字段；epoch 不一致时放弃（防止写回已清空的档案）。"""
     user_id = str(user_id)
     with _transaction() as conn:
-        if expected_epoch is not None:
-            row = conn.execute("SELECT epoch FROM memory_epoch WHERE user_id=?", (user_id,)).fetchone()
-            cur = int(row[0]) if row else 0
-            if cur != expected_epoch:
-                return False
+        if expected_epoch is not None and _epoch_on(conn, user_id) != expected_epoch:
+            return False
+        if turn_id and not _turn_active(conn, turn_id):
+            return False
         row = conn.execute("SELECT data FROM user_profile WHERE user_id=?", (user_id,)).fetchone()
         try:
             data = json.loads(row[0]) if row else {}
@@ -1029,7 +1075,7 @@ def update_profile(user_id, patch, expected_epoch=None):
             data = {}
         data = {**_DEFAULT_PROFILE, **data}
         data["user_id"] = user_id
-        data.update(patch or {})
+        data.update((patch(data) if callable(patch) else patch) or {})
         conn.execute(
             "INSERT INTO user_profile VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
             (user_id, json.dumps(data, ensure_ascii=False))
@@ -1048,17 +1094,64 @@ def append_history(user_id, role, content, message_id=None, expected_epoch=None,
             cur = int(row[0]) if row else 0
             if cur != expected_epoch:
                 return False
-        now = time.time()
-        conn.execute(
-            "INSERT INTO chat_history(user_id, ts, role, content, message_id) VALUES (?,?,?,?,?)",
-            (user_id, now, role, content, str(message_id) if message_id else None)
-        )
-        conn.execute("""
-            DELETE FROM chat_history WHERE user_id=? AND rowid NOT IN (
-                SELECT rowid FROM chat_history WHERE user_id=? ORDER BY ts DESC, rowid DESC LIMIT ?
-            )
-        """, (user_id, user_id, int(retain_limit)))
+        _append_on(conn, user_id, role, content, message_id, retain_limit=retain_limit)
     return True
+
+
+def _append_on(conn, scope, role, text, message_id=None, turn_id=None, retain_limit=RETAIN_LIMIT):
+    conn.execute(
+        "INSERT INTO chat_history(user_id,ts,role,content,message_id,turn_id) VALUES (?,?,?,?,?,?)",
+        (scope, time.time(), role, text, str(message_id) if message_id is not None else None, turn_id)
+    )
+    conn.execute("""
+        DELETE FROM chat_history WHERE user_id=? AND rowid NOT IN (
+            SELECT rowid FROM chat_history WHERE user_id=? ORDER BY ts DESC,rowid DESC LIMIT ?
+        )
+    """, (scope, scope, int(retain_limit)))
+
+
+def latest_confirmed_turn(scope, member=None):
+    conn = _db()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT * FROM chat_turn WHERE scope=? AND active=1 AND (? IS NULL OR member=?) "
+            "ORDER BY ts DESC,rowid DESC LIMIT 1", (scope, member, member)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def commit_chat_turn(scope, member, input_text, input_id, reply, reply_id, epochs, replaces=None):
+    """Record an acknowledged reply. Supersede only the exact prior turn, atomically."""
+    turn_id = uuid.uuid4().hex
+    removed = []
+    with _transaction() as conn:
+        if any(_epoch_on(conn, uid) != epoch for uid, epoch in epochs.items()):
+            return None
+        if replaces:
+            changed = conn.execute(
+                "UPDATE chat_turn SET active=0 WHERE id=? AND scope=? AND member=? AND active=1",
+                (replaces, scope, member),
+            ).rowcount
+            if not changed:
+                return None
+            conn.execute("DELETE FROM chat_history WHERE turn_id=?", (replaces,))
+            removed = [row[0] for row in conn.execute("SELECT doc_id FROM memory_meta WHERE turn_id=?", (replaces,))]
+            conn.execute("DELETE FROM memory_meta WHERE turn_id=?", (replaces,))
+        conn.execute("INSERT INTO chat_turn VALUES (?,?,?,?,?,?,?,1)",
+                     (turn_id, scope, member, input_id, input_text, reply_id, time.time()))
+        conn.execute(
+            "DELETE FROM chat_turn WHERE scope=? AND id NOT IN "
+            "(SELECT id FROM chat_turn WHERE scope=? ORDER BY ts DESC,rowid DESC LIMIT ?)",
+            (scope, scope, RETAIN_LIMIT),
+        )
+        _append_on(conn, scope, "assistant", reply, reply_id, turn_id)
+        if member != scope:
+            _append_on(conn, member, "user", input_text, input_id, turn_id)
+            _append_on(conn, member, "assistant", reply, reply_id, turn_id)
+    return turn_id, removed
 
 
 def replace_history(user_id, history):
@@ -1175,65 +1268,59 @@ def get_last_history_ts(user_id, role=None):
 
 # ====== /char set 与 /char clear ======
 def set_user_character(user_id, character_prompt):
-    memory = load_user_memory(user_id)
-    memory["character_prompt"] = character_prompt
-    save_user_memory(user_id, memory)
+    update_profile(user_id, {"character_prompt": character_prompt})
     print(f"[人格] 已为用户 {user_id} 设置专属人格")
 
 def clear_user_character(user_id):
-    memory = load_user_memory(user_id)
-    memory["character_prompt"] = ""
-    save_user_memory(user_id, memory)
+    set_user_character(user_id, "")
     print(f"[人格] 已清除用户 {user_id} 的专属人格")
 
 # ====== /charfit set ======
 def set_user_fitness(user_id, fitness):
-    memory = load_user_memory(user_id)
-    memory["fitness"] = fitness
-    save_user_memory(user_id, memory)
+    update_profile(user_id, {"fitness": fitness})
     print(f"[人格] 已设置用户 {user_id} 的人设拟合度为 {fitness}")
 
 # ====== /mdchange ======
 def toggle_user_mode(user_id):
-    memory = load_user_memory(user_id)
-    mode = memory.get("mode")
-    if mode == "聊天":
-        mode = "扮演"
-    else:
-        mode = "聊天"
-
-    memory["mode"] = mode
-    save_user_memory(user_id, memory)
+    mode = None
+    def toggle(data):
+        nonlocal mode
+        mode = "扮演" if (data.get("mode") or load_settings()["default_mode"]) == "聊天" else "聊天"
+        return {"mode": mode}
+    update_profile(user_id, toggle)
     print(f"[模式] 已将用户 {user_id} 的回复模式切换为 {mode}模式")
     return mode
 
 
 def set_user_mode(user_id, mode):
     """设置指定档案的回复模式；mode 为 None/空 表示跟随全局默认。"""
-    memory = load_user_memory(user_id)
-    if mode in ("扮演", "聊天"):
-        memory["mode"] = mode
-    else:
-        memory["mode"] = None
-    save_user_memory(user_id, memory)
-    print(f"[模式] 档案 {user_id} 回复模式设为 {memory['mode'] or '跟随全局'}")
-    return memory["mode"]
+    mode = mode if mode in ("扮演", "聊天") else None
+    update_profile(user_id, {"mode": mode})
+    return mode
 
 
 def set_archive_at_only(user_id, at_only):
     """设置指定群档案的触发方式；at_only 为 None 表示跟随全局。"""
-    memory = load_user_memory(user_id)
-    memory["at_only"] = None if at_only is None else bool(at_only)
-    save_user_memory(user_id, memory)
-    label = "跟随全局" if memory["at_only"] is None else ("仅提及" if memory["at_only"] else "自主互动")
-    print(f"[触发] 档案 {user_id} 触发方式设为 {label}")
-    return memory["at_only"]
+    at_only = None if at_only is None else bool(at_only)
+    update_profile(user_id, {"at_only": at_only})
+    return at_only
+
+
+def toggle_archive_at_only(user_id):
+    result = False
+    def toggle(data):
+        nonlocal result
+        current = data.get("at_only")
+        result = not (load_settings()["at_only"] if current is None else current)
+        return {"at_only": result}
+    update_profile(user_id, toggle)
+    return result
 
 
 def effective_at_only(settings, scope):
     """取某档案的有效触发方式：档案覆盖优先，否则用全局默认。"""
     try:
-        override = load_user_memory(scope).get("at_only")
+        override = load_user_memory(scope, profile_only=True).get("at_only")
     except Exception:
         override = None
     return bool(settings.get("at_only", True)) if override is None else bool(override)
@@ -1253,6 +1340,7 @@ def clear_user_memory(user_id):
         conn.execute("DELETE FROM memory_meta WHERE user_id=?", (uid,))
         conn.execute("DELETE FROM musing_used WHERE user_id=?", (uid,))
         conn.execute("DELETE FROM chat_history WHERE user_id=?", (uid,))
+        conn.execute("DELETE FROM chat_turn WHERE scope=? OR member=?", (uid, uid))
 
         row = conn.execute("SELECT data FROM user_profile WHERE user_id=?", (uid,)).fetchone()
         try:
@@ -1272,82 +1360,17 @@ def clear_user_memory(user_id):
         )
 
     # 向量记忆也清掉（Chroma 不在 SQLite 事务里，放在后面）
-    try:
-        if ids:
-            _get_collection().delete(ids=ids)
-    except Exception as e:
-        log(f"[向量] 清空 {user_id} 的向量记忆失败: {e}")
+    remove_index_documents(ids)
     print(f"[记忆] 已清空用户 {user_id} 的记忆（保留人设与参数）")
 
 # ====== /user set 与 /user clear ======
 def set_user_persona(user_id, persona):
-    memory = load_user_memory(user_id)
-    memory["user_persona"] = persona
-    save_user_memory(user_id, memory)
+    update_profile(user_id, {"user_persona": persona})
     print(f"[档案] 已为用户 {user_id} 设置用户人设")
 
 def clear_user_persona(user_id):
-    memory = load_user_memory(user_id)
-    memory["user_persona"] = ""
-    save_user_memory(user_id, memory)
+    set_user_persona(user_id, "")
     print(f"[档案] 已清除用户 {user_id} 的用户人设")
-
-# ====== /rl ======
-# 弹出最后一轮对话（用户+回复），返回 (用户消息, message_id) 用于重新生成
-def pop_last_turn(user_id):
-    """弹出最后一轮对话（用户+回复），返回 (用户消息, message_id)。"""
-    uid = str(user_id)
-    with _transaction() as conn:
-        rows = conn.execute(
-            "SELECT rowid, role, content, message_id FROM chat_history WHERE user_id=? "
-            "ORDER BY ts DESC, rowid DESC LIMIT 2",
-            (uid,)
-        ).fetchall()
-        if not rows:
-            return None
-        idx = 0
-        if rows[0][1] == "assistant":
-            conn.execute("DELETE FROM chat_history WHERE rowid=?", (rows[0][0],))
-            idx = 1
-        if idx < len(rows) and rows[idx][1] == "user":
-            conn.execute("DELETE FROM chat_history WHERE rowid=?", (rows[idx][0],))
-            return rows[idx][2], rows[idx][3]
-        return None
-
-
-def delete_last_vector(user_id):
-    """删除该档案最近 10 分钟内最新一条 dialogue 向量，防止 /rl 重生成残留废回复。"""
-    uid = str(user_id)
-    cutoff = time.time() - 600
-    try:
-        conn = _db()
-        try:
-            row = conn.execute(
-                "SELECT doc_id FROM memory_meta "
-                "WHERE user_id=? AND type='dialogue' AND ts>=? "
-                "ORDER BY ts DESC LIMIT 1",
-                (uid, cutoff)
-            ).fetchone()
-        finally:
-            conn.close()
-        if not row:
-            return False
-        doc_id = row[0]
-        try:
-            _get_collection().delete(ids=[doc_id])
-        except Exception as e:
-            log(f"[向量] 删除 /rl 残留向量失败 {doc_id}: {e}")
-        conn = _db()
-        try:
-            conn.execute("DELETE FROM memory_meta WHERE doc_id=?", (doc_id,))
-            conn.commit()
-        finally:
-            conn.close()
-        return True
-    except Exception as e:
-        log(f"[向量] 查询 /rl 残留向量失败 {uid}: {e}")
-        return False
-
 
 # ====== 旧JSON档案迁移 ======
 def migrate_from_json():

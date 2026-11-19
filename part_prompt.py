@@ -17,7 +17,7 @@ CONFIG_FILE = os.environ.get(
 DEFAULT_FILES = [
     {"file": "02_角色人设（白金）.txt", "enabled": False, "character": True},
     {"file": "03_符号格式.txt", "enabled": True, "format": True},
-    {"file": "04_字数要求.txt", "enabled": True, "format": True},
+    {"file": "04_字数要求.txt", "enabled": True},
     {"file": "05_人设拟合.txt", "enabled": True},
     {"file": "06_聊天模式.txt", "enabled": True, "chat": True},
     {"file": "07_记忆总结.txt", "enabled": True, "internal": True},
@@ -39,8 +39,8 @@ def _infer_flags(filename):
     """根据文件名推断用途标记，方便手动丢进 prompts/ 的新文件自动识别。"""
     flags = {}
     if filename.startswith("02_"):
-        flags["character"] = False
-    elif filename.startswith(("03_", "04_")):
+        flags["character"] = True
+    elif filename.startswith("03_"):
         flags["format"] = True
     elif filename.startswith("06_"):
         flags["chat"] = True
@@ -93,11 +93,19 @@ def load_config():
             item.update(_infer_flags(name))
             files.append(item)
 
+    explicit_character = any(item.get("enabled") and item.get("character") for item in files)
     for item in files:
         item["enabled"] = bool(item.get("enabled", False))
         for flag in ("character", "format", "chat", "internal"):
             if flag in item:
                 item[flag] = bool(item[flag])
+        if item["file"].startswith("02_"):
+            # 旧版切换会把未选中的角色降为 BASE；文件名可恢复其类型。
+            if not item.get("character") and (explicit_character or item.get("character") is False):
+                item["enabled"] = False
+            item["character"] = True
+        if item["file"] == "04_字数要求.txt":
+            item.pop("format", None)
     return files
 
 
@@ -149,12 +157,14 @@ def load_prompts(params=None, include_character=True,
                  include_format=True, include_chat=False):
     """按当前开关拼装系统提示词（与原 load_prompts 语义一致）。"""
     full_prompt = ""
-    for item in load_config():
+    files = load_config()
+    selected = next((x["file"] for x in files if x.get("enabled") and x.get("character")), None)
+    for item in files:
         if not item.get("enabled", False):
             continue
         if item.get("internal", False):
             continue
-        if not include_character and item.get("character", False):
+        if item.get("character") and (not include_character or item["file"] != selected):
             continue
         if not include_format and item.get("format", False):
             continue
@@ -168,6 +178,16 @@ def load_prompts(params=None, include_character=True,
                 content = content.replace(f"{{{key}}}", str(value))
         full_prompt += content + "\n"
     return full_prompt
+
+
+def select_character(files, name):
+    target = next((item for item in files if item["file"] == name), None)
+    if target is None or target.get("internal") or target.get("format") or target.get("chat"):
+        raise ValueError("请选择有效的人设提示词")
+    target["character"] = True
+    for item in files:
+        if item.get("character"):
+            item["enabled"] = item is target
 
 
 def internal_prompt(filename):

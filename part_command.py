@@ -1,8 +1,9 @@
 import asyncio
-import json
+import math
 import re
 import part_record
 import part_sticker
+from part_runtime import qq_id
 
 
 # ====== 指令列表 ======
@@ -104,37 +105,46 @@ def build_help(admin=False, in_group=False):
 
 
 # ====== 消息发送 ======
+_gateway_call = None
+
+
+def set_gateway_call(callback):
+    global _gateway_call
+    _gateway_call = callback
+
+
+async def _send(websocket, action, params):
+    if _gateway_call is None:
+        raise RuntimeError("OneBot 发送服务未初始化")
+    if not (params.get("group_id") or params.get("user_id")):
+        raise ValueError("无效的 QQ / 群号")
+    response = await _gateway_call(websocket, action, params)
+    if not response or response.get("status") != "ok" or response.get("retcode", 0) != 0:
+        raise RuntimeError(f"OneBot {action} 未确认送达")
+    data = response.get("data")
+    return data.get("message_id") if isinstance(data, dict) else None
+
+
+def _segments(message):
+    return message if isinstance(message, list) else [{"type": "text", "data": {"text": str(message)}}]
+
+
 async def send_private(websocket, user_id, message):
-    action = {
-        "action": "send_private_msg",
-        "params": {"user_id": user_id, "message": message},
-        "echo": "send_msg"
-    }
-    await websocket.send(json.dumps(action))
+    return await _send(websocket, "send_private_msg", {"user_id": qq_id(user_id), "message": _segments(message)})
 
 
 async def send_group(websocket, group_id, message, reply_to=None):
-    if reply_to:
-        if isinstance(message, list):
-            message = [{"type": "reply", "data": {"id": str(reply_to)}}] + message
-        else:
-            message = [
-                {"type": "reply", "data": {"id": str(reply_to)}},
-                {"type": "text", "data": {"text": str(message)}},
-            ]
-    action = {
-        "action": "send_group_msg",
-        "params": {"group_id": group_id, "message": message},
-        "echo": "send_group_msg"
-    }
-    await websocket.send(json.dumps(action))
+    segments = _segments(message)
+    if reply_to is not None:
+        segments = [{"type": "reply", "data": {"id": str(reply_to)}}] + segments
+    return await _send(websocket, "send_group_msg", {"group_id": qq_id(group_id), "message": segments})
 # =====================
 
 
 # ====== 权限判断 ======
 # 只认管理员QQ列表（ADMIN_QQ），群主/群管理员不算
 def is_admin(event, admin_qq):
-    return event.get("user_id") in admin_qq
+    return qq_id(event.get("user_id")) in admin_qq
 # =====================
 
 
@@ -161,6 +171,8 @@ def _parse_faverset(text, target, label):
     if len(parts) == 4:
         try:
             value = float(parts[3])
+            if not math.isfinite(value):
+                return "[指令] 好感度必须是有限数字"
             result = part_record.set_favorability(target, value)
             return f"[指令] 已将 {label} 的好感度设置为 {result}"
         except ValueError:
@@ -245,9 +257,8 @@ def _parse_scdset(text):
 
 
 def _toggle_duel():
-    cur = part_record.load_settings()
-    new_val = not cur.get("sticker_duel_mode", False)
-    part_record.set_sticker_setting("sticker_duel_mode", new_val)
+    cur = part_record.mutate_settings(lambda s: s.update(sticker_duel_mode=not s["sticker_duel_mode"]))
+    new_val = cur["sticker_duel_mode"]
     return f"[指令] 斗图恶搞模式已{'开启（收到表情只回表情对线）' if new_val else '关闭'}"
 
 
@@ -291,9 +302,9 @@ def _handle_bot_cmd(text):
         bot_qq = m.group(0)
         if bot_qq in known_bots:
             return f"[指令] 机器人 {bot_qq} 已在列表中"
-        known_bots.append(bot_qq)
-        cur["known_bots"] = known_bots
-        part_record.save_settings(cur)
+        part_record.mutate_settings(lambda s: s.update(known_bots=list(dict.fromkeys([
+            *map(str, s.get("known_bots", [])), bot_qq
+        ]))))
         return f"[指令] 已成功标注机器人 QQ：{bot_qq}"
 
     if len(parts) == 3 and parts[1] in ("del", "remove", "rm"):
@@ -304,9 +315,9 @@ def _handle_bot_cmd(text):
         bot_qq = m.group(0)
         if bot_qq not in known_bots:
             return f"[指令] 列表中未找到机器人 {bot_qq}"
-        known_bots = [b for b in known_bots if b != bot_qq]
-        cur["known_bots"] = known_bots
-        part_record.save_settings(cur)
+        part_record.mutate_settings(lambda s: s.update(
+            known_bots=[b for b in s.get("known_bots", []) if str(b) != bot_qq]
+        ))
         return f"[指令] 已移除机器人 QQ：{bot_qq}"
 
     if len(parts) == 3 and parts[1] == "step":
@@ -314,8 +325,7 @@ def _handle_bot_cmd(text):
             val = float(parts[2])
             if not 0 <= val <= 100:
                 return "[指令] 衰减步长范围为 0 - 100（百分比）"
-            cur["bot_decay_step"] = val
-            part_record.save_settings(cur)
+            part_record.patch_settings({"bot_decay_step": val})
             return f"[指令] 机器人互动衰减步长已设置为 {val:g}%"
         except ValueError:
             return "[指令] 请输入有效的数字，格式：/bot step <百分比>"
@@ -361,7 +371,9 @@ async def handle_command(websocket, event, msg_text, admin, on_rl, on_poke=None)
     # /rl：数据库弹出与重新入库统一放入调用方的串行队列
     if text == "/rl":
         if on_rl:
-            on_rl()
+            result = on_rl()
+            if asyncio.iscoroutine(result):
+                await result
         return True
 
     # /memory reset
@@ -452,10 +464,7 @@ async def handle_command(websocket, event, msg_text, admin, on_rl, on_poke=None)
         if not admin:
             await reply_msg("[指令] 仅管理员可用")
         elif in_group:
-            settings = await _to_thread(part_record.load_settings)
-            cur = await _to_thread(part_record.effective_at_only, settings, scope_key)
-            new_val = not cur
-            await _to_thread(part_record.set_archive_at_only, scope_key, new_val)
+            new_val = await _to_thread(part_record.toggle_archive_at_only, scope_key)
             await reply_msg(f"[指令] 本群触发方式已切换为：{'仅提及' if new_val else '自主互动'}")
         else:
             at_only = await _to_thread(part_record.toggle_at_only)
